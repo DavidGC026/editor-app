@@ -49,6 +49,13 @@ import {
   gitDiscard,
 } from './git';
 import {
+  startDeviceFlow,
+  waitForDeviceToken,
+  cancelDeviceFlow,
+  fetchGithubLogin,
+  DeviceCodeInfo,
+} from './github-auth';
+import {
   ClaudeIdeEditorState,
   ClaudeIdeSelection,
   ClaudeIdeServer,
@@ -760,6 +767,96 @@ ipcMain.handle('shell:revealInFolder', (_event, targetPath: string) => {
   return true;
 });
 
+ipcMain.handle('shell:openExternal', (_event, url: string) => {
+  if (typeof url !== 'string' || !/^https:\/\//i.test(url)) return false;
+  void shell.openExternal(url);
+  return true;
+});
+
+// ── GitHub OAuth (device flow) ───────────────────────────────────────────
+//
+// Token + client id live in the same local JSON config as the AI keys.
+
+interface GithubConfig {
+  clientId?: string;
+  token?: string;
+  login?: string;
+}
+
+function loadGithubConfig(): GithubConfig {
+  const cfg = loadConfig();
+  return cfg.github && typeof cfg.github === 'object' ? (cfg.github as GithubConfig) : {};
+}
+
+function saveGithubConfig(gh: GithubConfig): void {
+  const cfg = loadConfig();
+  cfg.github = gh;
+  saveConfig(cfg);
+}
+
+// Device-flow state for the session (deviceCode never goes to the renderer).
+let pendingGithubFlow: { clientId: string; info: DeviceCodeInfo } | null = null;
+
+ipcMain.handle('github:getAuth', async () => {
+  const gh = loadGithubConfig();
+  return {
+    authenticated: Boolean(gh.token),
+    login: gh.login || null,
+    clientId: gh.clientId || null,
+  };
+});
+
+ipcMain.handle('github:setClientId', async (_event, clientId: string) => {
+  if (typeof clientId !== 'string') throw new Error('Argumentos inválidos.');
+  const gh = loadGithubConfig();
+  gh.clientId = clientId.trim();
+  saveGithubConfig(gh);
+  return true;
+});
+
+ipcMain.handle('github:startDeviceFlow', async () => {
+  const gh = loadGithubConfig();
+  if (!gh.clientId) {
+    throw new Error('Configura primero el Client ID de tu OAuth App de GitHub.');
+  }
+  const info = await startDeviceFlow(gh.clientId);
+  pendingGithubFlow = { clientId: gh.clientId, info };
+  return {
+    userCode: info.userCode,
+    verificationUri: info.verificationUri,
+    expiresIn: info.expiresIn,
+  };
+});
+
+ipcMain.handle('github:waitForToken', async () => {
+  if (!pendingGithubFlow) throw new Error('No hay una autenticación en curso.');
+  const { clientId, info } = pendingGithubFlow;
+  const token = await waitForDeviceToken(clientId, info);
+  pendingGithubFlow = null;
+  const login = await fetchGithubLogin(token);
+  const gh = loadGithubConfig();
+  gh.token = token;
+  gh.login = login;
+  saveGithubConfig(gh);
+  return { login };
+});
+
+ipcMain.handle('github:cancelDeviceFlow', async () => {
+  cancelDeviceFlow();
+  pendingGithubFlow = null;
+  return true;
+});
+
+ipcMain.handle('github:logout', async () => {
+  cancelDeviceFlow();
+  pendingGithubFlow = null;
+  const gh = loadGithubConfig();
+  delete gh.token;
+  delete gh.login;
+  saveGithubConfig(gh);
+  return true;
+});
+
 // ── Claude Code IDE bridge ───────────────────────────────────────────────
 ipcMain.on('claude:editorStateChanged', (_event, state: ClaudeIdeEditorState) => {
   if (!state || typeof state !== 'object') return;
@@ -1339,14 +1436,19 @@ ipcMain.handle('git:diffSummary', async (_event, workspacePath: string) => {
   return gitDiffSummary(workspacePath);
 });
 
+function currentGitAuth(): { githubToken: string } | undefined {
+  const token = loadGithubConfig().token;
+  return token ? { githubToken: token } : undefined;
+}
+
 ipcMain.handle('git:push', async (_event, workspacePath: string) => {
   if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
-  return gitPush(workspacePath);
+  return gitPush(workspacePath, currentGitAuth());
 });
 
 ipcMain.handle('git:pull', async (_event, workspacePath: string) => {
   if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
-  return gitPull(workspacePath);
+  return gitPull(workspacePath, currentGitAuth());
 });
 
 ipcMain.handle('git:diff', async (_event, workspacePath: string, relPath: string, staged = false) => {

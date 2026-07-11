@@ -38,6 +38,10 @@ import {
   ArrowDown,
   UploadCloud,
   Sparkles,
+  Github,
+  Copy,
+  LogOut,
+  ExternalLink,
 } from 'lucide-react';
 import { generateCommitMessage } from '../ai/quickActions';
 
@@ -1234,6 +1238,164 @@ function TimelineSection() {
 // ─────────────────────────────────────────────────────────────────────────
 // Placeholder panels (for non-explorer activity items)
 // ─────────────────────────────────────────────────────────────────────────
+function GithubAuthModal({ onClose }: { onClose: () => void }) {
+  const [auth, setAuth] = useState<{
+    authenticated: boolean;
+    login: string | null;
+    clientId: string | null;
+  } | null>(null);
+  const [clientIdInput, setClientIdInput] = useState('');
+  const [flow, setFlow] = useState<{ userCode: string; verificationUri: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.electronAPI.github.getAuth().then((a) => {
+      setAuth(a);
+      setClientIdInput(a.clientId || '');
+    });
+  }, []);
+
+  const close = () => {
+    if (flow) void window.electronAPI.github.cancelDeviceFlow();
+    onClose();
+  };
+
+  const startLogin = async () => {
+    const clientId = clientIdInput.trim();
+    if (!clientId) {
+      setError('Introduce el Client ID de tu OAuth App.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      if (clientId !== auth?.clientId) {
+        await window.electronAPI.github.setClientId(clientId);
+      }
+      const f = await window.electronAPI.github.startDeviceFlow();
+      setFlow(f);
+      void navigator.clipboard.writeText(f.userCode);
+      void window.electronAPI.openExternal(f.verificationUri);
+      const { login } = await window.electronAPI.github.waitForToken();
+      setFlow(null);
+      setAuth({ authenticated: true, login, clientId });
+    } catch (err) {
+      setFlow(null);
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const logout = async () => {
+    await window.electronAPI.github.logout();
+    setAuth((a) => (a ? { ...a, authenticated: false, login: null } : a));
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) close();
+      }}
+    >
+      <div className="w-[380px] max-w-[90vw] bg-forge-sidebar border border-forge-border rounded-lg p-4 text-forge-text shadow-xl">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2 text-[13px] font-semibold">
+            <Github size={16} />
+            GitHub
+          </div>
+          <button onClick={close} className="text-forge-text/60 hover:text-forge-text">
+            <XCircle size={16} />
+          </button>
+        </div>
+
+        {auth?.authenticated ? (
+          <div className="space-y-3">
+            <p className="text-[12px]">
+              Conectado como <span className="text-forge-accent font-semibold">{auth.login}</span>.
+              El push y pull por HTTPS ya funcionan.
+            </p>
+            <button
+              onClick={() => void logout()}
+              className="flex items-center gap-2 px-3 py-1.5 rounded bg-forge-accent/15 text-forge-accent text-[12px] hover:bg-forge-accent/25"
+            >
+              <LogOut size={13} />
+              Cerrar sesión
+            </button>
+          </div>
+        ) : flow ? (
+          <div className="space-y-3 text-[12px]">
+            <p>Introduce este código en GitHub (ya está copiado al portapapeles):</p>
+            <div className="flex items-center justify-center gap-2">
+              <span className="text-[20px] font-mono font-bold tracking-widest text-forge-accent">
+                {flow.userCode}
+              </span>
+              <button
+                onClick={() => void navigator.clipboard.writeText(flow.userCode)}
+                title="Copiar código"
+                className="text-forge-text/60 hover:text-forge-accent"
+              >
+                <Copy size={14} />
+              </button>
+            </div>
+            <button
+              onClick={() => void window.electronAPI.openExternal(flow.verificationUri)}
+              className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded bg-forge-accent/15 text-forge-accent hover:bg-forge-accent/25"
+            >
+              <ExternalLink size={13} />
+              Abrir {flow.verificationUri.replace('https://', '')}
+            </button>
+            <p className="flex items-center gap-2 text-forge-text/60">
+              <Loader2 size={13} className="animate-spin" />
+              Esperando autorización en GitHub…
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3 text-[12px]">
+            <p className="text-forge-text/80 leading-snug">
+              Inicia sesión con OAuth (device flow) para que push/pull por HTTPS
+              funcionen como en VS Code. Necesitas una OAuth App propia:{' '}
+              <button
+                onClick={() =>
+                  void window.electronAPI.openExternal(
+                    'https://github.com/settings/applications/new',
+                  )
+                }
+                className="text-forge-accent hover:underline"
+              >
+                créala aquí
+              </button>{' '}
+              (cualquier callback URL sirve) y marca{' '}
+              <span className="font-semibold">"Enable Device Flow"</span>.
+            </p>
+            <input
+              value={clientIdInput}
+              onChange={(e) => setClientIdInput(e.target.value)}
+              placeholder="Client ID de la OAuth App (p. ej. Iv1.abc123…)"
+              spellCheck={false}
+              className="w-full bg-forge-input text-forge-text text-[12px] px-2 py-1.5 rounded outline-none border border-transparent focus:border-forge-accent/60"
+            />
+            <button
+              onClick={() => void startLogin()}
+              disabled={busy || !clientIdInput.trim()}
+              className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded bg-forge-accent/15 text-forge-accent hover:bg-forge-accent/25 disabled:opacity-40"
+            >
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <Github size={13} />}
+              Conectar con GitHub
+            </button>
+          </div>
+        )}
+
+        {error && (
+          <p className="mt-3 text-[11px] leading-snug text-red-400/90 whitespace-pre-wrap">{error}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SourceControlPanel() {
   const workspacePath = useStore((s) => s.workspacePath);
   const gitIsRepo = useStore((s) => s.gitIsRepo);
@@ -1261,6 +1423,7 @@ function SourceControlPanel() {
   const [message, setMessage] = useState('');
   const [aiMsgBusy, setAiMsgBusy] = useState(false);
   const [aiMsgError, setAiMsgError] = useState<string | null>(null);
+  const [githubModalOpen, setGithubModalOpen] = useState(false);
 
   useEffect(() => {
     void refreshGitStatus();
@@ -1419,6 +1582,13 @@ function SourceControlPanel() {
         <span>Source Control</span>
         <div className="flex items-center gap-2.5">
           <button
+            onClick={() => setGithubModalOpen(true)}
+            title="GitHub — iniciar sesión (OAuth)"
+            className="text-forge-text hover:text-forge-accent"
+          >
+            <Github size={13} />
+          </button>
+          <button
             onClick={() => void pull()}
             disabled={anyBusy || !gitHasUpstream}
             title={gitHasUpstream ? 'Pull' : 'Pull (sin upstream)'}
@@ -1546,6 +1716,8 @@ function SourceControlPanel() {
           <p className="mt-2 text-[11px] leading-snug text-red-400/90">{gitError}</p>
         )}
       </div>
+
+      {githubModalOpen && <GithubAuthModal onClose={() => setGithubModalOpen(false)} />}
 
       <div className="flex-1 overflow-y-auto sidebar-scroll px-3 pb-4">
         {gitChanges.length === 0 ? (

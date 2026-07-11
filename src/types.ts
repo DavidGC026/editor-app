@@ -455,6 +455,18 @@ export interface ElectronAPI {
   readClipboard: () => Promise<string>;
   /** Reveal a file/folder in the OS file manager. */
   revealInFolder: (targetPath: string) => Promise<boolean>;
+  /** Open an https:// URL in the default browser. */
+  openExternal: (url: string) => Promise<boolean>;
+  /** GitHub OAuth device flow — sign in so HTTPS push/pull work like VS Code. */
+  github: {
+    getAuth: () => Promise<{ authenticated: boolean; login: string | null; clientId: string | null }>;
+    setClientId: (clientId: string) => Promise<boolean>;
+    startDeviceFlow: () => Promise<{ userCode: string; verificationUri: string; expiresIn: number }>;
+    /** Resolves when the user authorizes on github.com (token saved in main). */
+    waitForToken: () => Promise<{ login: string }>;
+    cancelDeviceFlow: () => Promise<boolean>;
+    logout: () => Promise<boolean>;
+  };
   // ── Live Server (built-in HTTP server, port 5500) ───────────────────
   liveServer: {
     /** Starts a static HTTP server rooted at the directory of the given

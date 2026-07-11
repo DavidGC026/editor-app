@@ -72,6 +72,16 @@ export interface ElectronAPI {
   // Clipboard
   readClipboard: () => Promise<string>;
   revealInFolder: (targetPath: string) => Promise<boolean>;
+  openExternal: (url: string) => Promise<boolean>;
+  // GitHub OAuth (device flow)
+  github: {
+    getAuth: () => Promise<{ authenticated: boolean; login: string | null; clientId: string | null }>;
+    setClientId: (clientId: string) => Promise<boolean>;
+    startDeviceFlow: () => Promise<{ userCode: string; verificationUri: string; expiresIn: number }>;
+    waitForToken: () => Promise<{ login: string }>;
+    cancelDeviceFlow: () => Promise<boolean>;
+    logout: () => Promise<boolean>;
+  };
   // Live Server (built-in HTTP server on port 5500)
   liveServer: {
     start: (htmlPath: string) => Promise<{
@@ -314,6 +324,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Clipboard
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
   revealInFolder: (targetPath: string) => ipcRenderer.invoke('shell:revealInFolder', targetPath),
+  openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
+  github: {
+    getAuth: () => ipcRenderer.invoke('github:getAuth'),
+    setClientId: (clientId: string) => ipcRenderer.invoke('github:setClientId', clientId),
+    startDeviceFlow: () => ipcRenderer.invoke('github:startDeviceFlow'),
+    waitForToken: () => ipcRenderer.invoke('github:waitForToken'),
+    cancelDeviceFlow: () => ipcRenderer.invoke('github:cancelDeviceFlow'),
+    logout: () => ipcRenderer.invoke('github:logout'),
+  },
   // ── Live Server ───────────────────────────────────────────────────
   liveServer: {
     start: (htmlPath: string) => ipcRenderer.invoke('liveServer:start', htmlPath),

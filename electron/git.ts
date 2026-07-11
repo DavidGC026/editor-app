@@ -40,6 +40,7 @@ export interface GitLogEntry {
 function runGit(
   cwd: string,
   args: string[],
+  extraEnv: Record<string, string> = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve, reject) => {
     let child;
@@ -49,7 +50,7 @@ function runGit(
         windowsHide: true,
         // Never block on an interactive credential/host prompt inside the
         // app: fail fast with a readable error instead.
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...extraEnv },
       });
     } catch (err) {
       reject(err);
@@ -64,12 +65,53 @@ function runGit(
   });
 }
 
-async function gitOrThrow(cwd: string, args: string[]): Promise<string> {
-  const { stdout, stderr, code } = await runGit(cwd, args);
+async function gitOrThrow(
+  cwd: string,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): Promise<string> {
+  const { stdout, stderr, code } = await runGit(cwd, args, extraEnv);
   if (code !== 0) {
     throw new Error(stderr.trim() || stdout.trim() || `git ${args[0]} falló (código ${code}).`);
   }
   return stdout;
+}
+
+// ── GitHub token injection ──────────────────────────────────────────────
+//
+// When the user signed in with GitHub (OAuth device flow) we authenticate
+// HTTPS remotes through a transient in-memory credential helper. The token
+// travels via an environment variable — it never touches the command line
+// (visible in `ps`) nor any file on disk.
+export interface GitAuth {
+  githubToken: string;
+}
+
+async function remoteIsGithubHttps(cwd: string): Promise<boolean> {
+  const { stdout, code } = await runGit(cwd, ['remote', 'get-url', '--push', 'origin']);
+  if (code !== 0) return false;
+  return /^https:\/\/([^/]+@)?github\.com\//i.test(stdout.trim());
+}
+
+/** `-c` args that override every configured credential helper with one that
+ *  answers from $FORGE_GITHUB_TOKEN. The empty first value resets the
+ *  helper list so system/global helpers can't interfere. */
+function credentialArgs(): string[] {
+  return [
+    '-c', 'credential.helper=',
+    '-c',
+    'credential.helper=!f() { echo "username=x-access-token"; echo "password=$FORGE_GITHUB_TOKEN"; }; f',
+  ];
+}
+
+async function authFor(
+  cwd: string,
+  auth: GitAuth | undefined,
+): Promise<{ args: string[]; env: Record<string, string> }> {
+  if (auth?.githubToken && (await remoteIsGithubHttps(cwd))) {
+    return { args: credentialArgs(), env: { FORGE_GITHUB_TOKEN: auth.githubToken } };
+  }
+  return { args: [], env: {} };
 }
 
 const NOT_A_REPO: GitStatusPayload = {
@@ -249,19 +291,19 @@ function friendlyRemoteError(err: unknown): Error {
   const msg = err instanceof Error ? err.message : String(err);
   if (/could not read (Username|Password)|Authentication failed|Permission denied \(publickey\)/i.test(msg)) {
     return new Error(
-      'Git no pudo autenticarse con el remoto. Configura un credential helper ' +
-        '(p. ej. `git config --global credential.helper store`) o usa una URL SSH ' +
-        'con tu clave cargada, y prueba `git push` en una terminal primero.\n\n' + msg,
+      'Git no pudo autenticarse con el remoto. Inicia sesión con GitHub desde el ' +
+        'panel Source Control (icono de GitHub), o usa una URL SSH con tu clave cargada.\n\n' + msg,
     );
   }
   return err instanceof Error ? err : new Error(msg);
 }
 
-export async function gitPush(workspacePath: string): Promise<string> {
+export async function gitPush(workspacePath: string, auth?: GitAuth): Promise<string> {
+  const { args: credArgs, env } = await authFor(workspacePath, auth);
   const upstream = await upstreamRef(workspacePath);
   if (upstream) {
     try {
-      return (await gitOrThrow(workspacePath, ['push'])).trim();
+      return (await gitOrThrow(workspacePath, [...credArgs, 'push'], env)).trim();
     } catch (err) {
       throw friendlyRemoteError(err);
     }
@@ -284,21 +326,22 @@ export async function gitPush(workspacePath: string): Promise<string> {
     throw new Error('No hay una rama activa para hacer push (HEAD desprendido).');
   }
   try {
-    return (await gitOrThrow(workspacePath, ['push', '-u', remote, branch])).trim();
+    return (await gitOrThrow(workspacePath, [...credArgs, 'push', '-u', remote, branch], env)).trim();
   } catch (err) {
     throw friendlyRemoteError(err);
   }
 }
 
-export async function gitPull(workspacePath: string): Promise<string> {
+export async function gitPull(workspacePath: string, auth?: GitAuth): Promise<string> {
   const upstream = await upstreamRef(workspacePath);
   if (!upstream) {
     throw new Error(
       'La rama actual no tiene upstream configurado. Haz push primero para publicarla.',
     );
   }
+  const { args: credArgs, env } = await authFor(workspacePath, auth);
   try {
-    return (await gitOrThrow(workspacePath, ['pull', '--ff-only'])).trim();
+    return (await gitOrThrow(workspacePath, [...credArgs, 'pull', '--ff-only'], env)).trim();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (/Not possible to fast-forward|divergent branches/i.test(msg)) {
