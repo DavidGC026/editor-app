@@ -7,6 +7,7 @@ import EditorArea from './components/EditorArea';
 import BottomPanel from './components/BottomPanel';
 import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
+import QuickOpen from './components/QuickOpen';
 import AIPanel from './components/AIPanel/AIPanel';
 import type { ClaudeIdeEditorState } from './types';
 import { lspClient } from './lsp/client';
@@ -154,7 +155,7 @@ function VerticalDivider({
           left: '50%',
           transform: 'translateX(-50%)',
           width: 2,
-          background: active ? '#4ADB94' : 'transparent',
+          background: active ? '#B65A48' : 'transparent',
           transition: 'background 0.12s ease',
           pointerEvents: 'none',
         }}
@@ -233,7 +234,7 @@ function HorizontalDivider({
           top: '50%',
           transform: 'translateY(-50%)',
           height: 2,
-          background: active ? '#4ADB94' : 'transparent',
+          background: active ? '#B65A48' : 'transparent',
           transition: 'background 0.12s ease',
           pointerEvents: 'none',
         }}
@@ -250,6 +251,8 @@ export default function App() {
   const saveFile = useStore((s) => s.saveFile);
   const setCommandPaletteOpen = useStore((s) => s.setCommandPaletteOpen);
   const commandPaletteOpen = useStore((s) => s.commandPaletteOpen);
+  const setQuickOpenOpen = useStore((s) => s.setQuickOpenOpen);
+  const quickOpenOpen = useStore((s) => s.quickOpenOpen);
   const zoomIn = useStore((s) => s.zoomIn);
   const zoomOut = useStore((s) => s.zoomOut);
   const resetZoom = useStore((s) => s.resetZoom);
@@ -442,6 +445,11 @@ export default function App() {
         setCommandPaletteOpen(!commandPaletteOpen);
         return;
       }
+      if (mod && !e.shiftKey && key === 'p') {
+        e.preventDefault();
+        setQuickOpenOpen(!quickOpenOpen);
+        return;
+      }
       // Zoom: Ctrl+= / Ctrl++ / Ctrl+NumpadAdd zoom in; Ctrl+- zoom out;
       // Ctrl+0 reset. Accept either Ctrl (Win/Linux) or Meta (macOS).
       if (mod && !e.altKey) {
@@ -475,11 +483,25 @@ export default function App() {
       if (e.key === 'Escape' && commandPaletteOpen) {
         setCommandPaletteOpen(false);
       }
+      if (e.key === 'Escape' && quickOpenOpen) {
+        setQuickOpenOpen(false);
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [saveFile, toggleSidebar, togglePanel, setCommandPaletteOpen, commandPaletteOpen, zoomIn, zoomOut, resetZoom]);
+  }, [
+    saveFile,
+    toggleSidebar,
+    togglePanel,
+    setCommandPaletteOpen,
+    commandPaletteOpen,
+    setQuickOpenOpen,
+    quickOpenOpen,
+    zoomIn,
+    zoomOut,
+    resetZoom,
+  ]);
 
   // Ctrl/Cmd + mouse wheel zoom (editor font size).
   useEffect(() => {
@@ -632,6 +654,7 @@ export default function App() {
 
       {/* Command Palette overlay */}
       {commandPaletteOpen && <CommandPalette />}
+      {quickOpenOpen && <QuickOpen />}
     </div>
   );
 }

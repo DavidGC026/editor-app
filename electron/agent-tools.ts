@@ -206,6 +206,106 @@ export function buscarEnProyecto(
   return { query: texto, matches, truncated };
 }
 
+// ─── reemplazar_en_proyecto ──────────────────────────────────────────────
+export function reemplazarEnProyecto(
+  workspacePath: string,
+  search: string,
+  replace: string,
+  options: { previewOnly?: boolean } = {},
+): {
+  search: string;
+  replace: string;
+  changes: { path: string; count: number; previews: { line: number; before: string; after: string }[] }[];
+  filesChanged: number;
+  totalReplacements: number;
+  applied: boolean;
+} {
+  if (!search || search.length < 1) {
+    throw new Error('El texto a buscar no puede estar vacío.');
+  }
+
+  const changes: {
+    path: string;
+    count: number;
+    previews: { line: number; before: string; after: string }[];
+  }[] = [];
+
+  function walk(dir: string) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (isIgnoredDir(entry.name)) continue;
+        walk(path.join(dir, entry.name));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (
+        [
+          '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.icns',
+          '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar',
+          '.mp3', '.mp4', '.mov', '.avi', '.wav', '.ogg', '.flac',
+          '.woff', '.woff2', '.ttf', '.eot', '.otf',
+          '.exe', '.dll', '.dylib', '.so', '.bin', '.lock',
+        ].includes(ext)
+      ) {
+        continue;
+      }
+      const full = path.join(dir, entry.name);
+      let text: string;
+      try {
+        const stat = fs.statSync(full);
+        if (stat.size > MAX_FILE_BYTES) continue;
+        text = fs.readFileSync(full, 'utf-8');
+      } catch {
+        continue;
+      }
+      if (!text.includes(search)) continue;
+
+      const lines = text.split('\n');
+      const previews: { line: number; before: string; after: string }[] = [];
+      let count = 0;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.includes(search)) continue;
+        const parts = line.split(search);
+        const occurrences = parts.length - 1;
+        count += occurrences;
+        const afterLine = parts.join(replace);
+        previews.push({
+          line: i + 1,
+          before: line.slice(0, 240),
+          after: afterLine.slice(0, 240),
+        });
+        lines[i] = afterLine;
+      }
+      if (count === 0) continue;
+
+      changes.push({ path: full, count, previews: previews.slice(0, 8) });
+
+      if (!options.previewOnly) {
+        fs.writeFileSync(full, lines.join('\n'), 'utf-8');
+      }
+    }
+  }
+
+  walk(workspacePath);
+  const totalReplacements = changes.reduce((sum, c) => sum + c.count, 0);
+  return {
+    search,
+    replace,
+    changes,
+    filesChanged: changes.length,
+    totalReplacements,
+    applied: !options.previewOnly,
+  };
+}
+
 // ─── Project tree (used by /init) ────────────────────────────────────────
 export interface ProjectTreeNode {
   name: string;

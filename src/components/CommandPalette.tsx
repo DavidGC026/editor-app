@@ -1,6 +1,47 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../store';
 import type { Command } from '../types';
+import { buildCommands, categoryOrder } from '../commandRegistry';
+import { fuzzyMatchCommand } from '../utils/fuzzy';
+import { loadRecentCommandIds, recordRecentCommand } from '../utils/recentCommands';
+import {
+  Bot,
+  Boxes,
+  Clock,
+  Command as CommandIcon,
+  FileSearch,
+  GitBranch,
+  Package,
+  PanelBottom,
+  Play,
+  Search,
+  Settings,
+  Sparkles,
+  TerminalSquare,
+  type LucideIcon,
+} from 'lucide-react';
+
+interface DisplayGroup {
+  category: string;
+  commands: Command[];
+}
+
+function iconForCategory(category: string): LucideIcon {
+  switch (category) {
+    case 'Recently Used': return Clock;
+    case 'File': return Search;
+    case 'View': return PanelBottom;
+    case 'Git': return GitBranch;
+    case 'Terminal': return TerminalSquare;
+    case 'Run': return Package;
+    case 'Live Server': return Play;
+    case 'AI': return Sparkles;
+    case 'Agent': return Bot;
+    case 'Extensions': return Boxes;
+    case 'Preferences': return Settings;
+    default: return CommandIcon;
+  }
+}
 
 export default function CommandPalette() {
   const [query, setQuery] = useState('');
@@ -13,127 +54,294 @@ export default function CommandPalette() {
   const openFolder = useStore((s) => s.openFolder);
   const saveFile = useStore((s) => s.saveFile);
   const setSidebarPanel = useStore((s) => s.setSidebarPanel);
+  const setBottomTab = useStore((s) => s.setBottomTab);
+  const setQuickOpenOpen = useStore((s) => s.setQuickOpenOpen);
+  const toggleAIPanel = useStore((s) => s.toggleAIPanel);
+  const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
+  const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
   const installVsixExtension = useStore((s) => s.installVsixExtension);
   const installExtensionById = useStore((s) => s.installExtensionById);
   const setColorTheme = useStore((s) => s.setColorTheme);
   const installedExtensions = useStore((s) => s.installedExtensions);
+  const openTabs = useStore((s) => s.openTabs);
+  const activeTabId = useStore((s) => s.activeTabId);
+  const workspacePath = useStore((s) => s.workspacePath);
+  const gitChanges = useStore((s) => s.gitChanges);
+  const gitIsRepo = useStore((s) => s.gitIsRepo);
+  const toggleLiveServer = useStore((s) => s.toggleLiveServer);
+  const autoSave = useStore((s) => s.autoSave);
+  const setAutoSave = useStore((s) => s.setAutoSave);
+  const formatOnSave = useStore((s) => s.formatOnSave);
+  const setFormatOnSave = useStore((s) => s.setFormatOnSave);
+  const wordWrap = useStore((s) => s.wordWrap);
+  const setWordWrap = useStore((s) => s.setWordWrap);
+  const minimapEnabled = useStore((s) => s.minimapEnabled);
+  const setMinimapEnabled = useStore((s) => s.setMinimapEnabled);
+  const toggleActiveGitDiffMode = useStore((s) => s.toggleActiveGitDiffMode);
+  const openGitDiff = useStore((s) => s.openGitDiff);
 
-  const close = () => setCommandPaletteOpen(false);
+  const activeTab = openTabs.find((tab) => tab.id === activeTabId);
 
-  const commands: Command[] = useMemo(
-    () => [
-      { id: 'open-folder', label: 'File: Open Folder', action: () => { openFolder(); close(); } },
-      { id: 'save-file', label: 'File: Save', shortcut: 'Ctrl+S', action: () => { saveFile(); close(); } },
-      { id: 'toggle-sidebar', label: 'View: Toggle Sidebar', shortcut: 'Ctrl+B', action: () => { toggleSidebar(); close(); } },
-      { id: 'toggle-panel', label: 'View: Toggle Panel', shortcut: 'Ctrl+`', action: () => { togglePanel(); close(); } },
-      { id: 'show-explorer', label: 'View: Show Explorer', action: () => { setSidebarPanel('explorer'); close(); } },
-      { id: 'show-search', label: 'View: Show Search', action: () => { setSidebarPanel('search'); close(); } },
-      { id: 'show-git', label: 'View: Show Source Control', action: () => { setSidebarPanel('git'); close(); } },
-      { id: 'show-debug', label: 'View: Show Run and Debug', action: () => { setSidebarPanel('debug'); close(); } },
-      { id: 'show-extensions', label: 'View: Show Extensions', action: () => { setSidebarPanel('extensions'); close(); } },
-      { id: 'install-vsix', label: 'Extensions: Install from VSIX', action: () => { void installVsixExtension(); close(); } },
-      { id: 'theme-forge-dark', label: 'Preferences: Color Theme — Forge Dark', action: () => { void setColorTheme('forge-dark'); close(); } },
-      ...installedExtensions.flatMap((ext) =>
+  const close = useCallback(() => setCommandPaletteOpen(false), [setCommandPaletteOpen]);
+
+  const themeCommands: Command[] = useMemo(
+    () =>
+      installedExtensions.flatMap((ext) =>
         ext.themes.map((t) => ({
           id: `theme-${t.id}`,
-          label: `Preferences: Color Theme — ${t.label}`,
-          action: () => { void setColorTheme(t.id); close(); },
+          label: `Color Theme — ${t.label}`,
+          category: 'Preferences',
+          keywords: ['theme', t.label],
+          action: () => {
+            void setColorTheme(t.id);
+            close();
+          },
         })),
       ),
-    ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [installedExtensions]
+    [installedExtensions, setColorTheme, close],
   );
 
-  const filtered = useMemo(() => {
-    // VSCode-style quick install: `ext install publisher.name` downloads the
-    // extension from Open VSX. Matches while typing so the entry is visible
-    // as soon as `ext install ` is written.
+  const allCommands = useMemo(
+    () =>
+      buildCommands({
+        activeTab,
+        workspacePath,
+        gitChanges,
+        gitIsRepo,
+        installedExtensionThemeCount: themeCommands.length,
+        autoSave,
+        formatOnSave,
+        wordWrap,
+        minimapEnabled,
+        close,
+        openFolder,
+        saveFile,
+        setQuickOpenOpen,
+        toggleSidebar,
+        togglePanel,
+        setSidebarPanel,
+        setBottomTab,
+        toggleAIPanel,
+        runCommandInTerminal,
+        installVsixExtension,
+        installExtensionById,
+        setColorTheme,
+        toggleLiveServer,
+        toggleActiveGitDiffMode,
+        runAgentInTerminal,
+        openGitDiff,
+        setAutoSave,
+        setFormatOnSave,
+        setWordWrap,
+        setMinimapEnabled,
+        themeCommands,
+      }),
+    [
+      activeTab,
+      workspacePath,
+      gitChanges,
+      gitIsRepo,
+      autoSave,
+      formatOnSave,
+      wordWrap,
+      minimapEnabled,
+      themeCommands,
+      close,
+      openFolder,
+      saveFile,
+      setQuickOpenOpen,
+      toggleSidebar,
+      togglePanel,
+      setSidebarPanel,
+      setBottomTab,
+      toggleAIPanel,
+      runCommandInTerminal,
+      installVsixExtension,
+      installExtensionById,
+      setColorTheme,
+      toggleLiveServer,
+      toggleActiveGitDiffMode,
+      runAgentInTerminal,
+      setAutoSave,
+      setFormatOnSave,
+      setWordWrap,
+      setMinimapEnabled,
+    ],
+  );
+
+  const commandMap = useMemo(
+    () => new Map(allCommands.map((cmd) => [cmd.id, cmd])),
+    [allCommands],
+  );
+
+  const groups: DisplayGroup[] = useMemo(() => {
     const extInstall = query.trim().match(/^ext\s+install(?:\s+(\S*))?$/i);
     if (extInstall) {
       const id = extInstall[1] ?? '';
-      return [
-        {
+      return [{
+        category: 'Extensions',
+        commands: [{
           id: 'ext-install-openvsx',
           label: id
-            ? `Extensions: Install '${id}' from Open VSX`
-            : 'Extensions: Install from Open VSX — escribe publisher.nombre',
+            ? `Install '${id}' from Open VSX`
+            : 'Install from Open VSX — escribe publisher.nombre',
+          category: 'Extensions',
           action: () => {
             if (!id) return;
             void installExtensionById(id);
             close();
           },
-        },
-      ];
+        }],
+      }];
     }
 
-    if (!query.trim()) return commands;
-    const lower = query.toLowerCase();
-    return commands.filter((cmd) => cmd.label.toLowerCase().includes(lower));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, commands]);
+    const trimmed = query.trim();
+    if (!trimmed) {
+      const recentIds = loadRecentCommandIds();
+      const recent = recentIds
+        .map((id) => commandMap.get(id))
+        .filter((cmd): cmd is Command => Boolean(cmd));
+
+      const contextualIds = new Set([
+        'ctx-git-diff',
+        'ctx-live-server',
+        'ctx-save-active',
+        'git-toggle-diff',
+      ]);
+      const contextual = allCommands.filter((cmd) => contextualIds.has(cmd.id));
+      const contextualSet = new Set(contextual.map((c) => c.id));
+
+      const byCategory = new Map<string, Command[]>();
+      for (const cmd of contextual) {
+        const cat = cmd.category || 'Contextual';
+        const list = byCategory.get(cat) ?? [];
+        list.push(cmd);
+        byCategory.set(cat, list);
+      }
+      for (const cmd of allCommands) {
+        if (contextualSet.has(cmd.id)) continue;
+        if (recent.some((r) => r.id === cmd.id)) continue;
+        const cat = cmd.category || 'Other';
+        const list = byCategory.get(cat) ?? [];
+        list.push(cmd);
+        byCategory.set(cat, list);
+      }
+
+      const result: DisplayGroup[] = [];
+      if (recent.length > 0) result.push({ category: 'Recently Used', commands: recent });
+      for (const [category, commands] of [...byCategory.entries()].sort(
+        (a, b) => categoryOrder(a[0]) - categoryOrder(b[0]),
+      )) {
+        result.push({ category, commands });
+      }
+      return result;
+    }
+
+    const scored = allCommands
+      .map((cmd) => ({
+        cmd,
+        score: fuzzyMatchCommand(cmd.label, trimmed, [
+          ...(cmd.keywords ?? []),
+          cmd.category ?? '',
+        ]),
+      }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return [{ category: 'Results', commands: scored.map((s) => s.cmd) }];
+  }, [query, allCommands, commandMap, installExtensionById, close]);
+
+  const flatCommands = useMemo(
+    () => groups.flatMap((g) => g.commands),
+    [groups],
+  );
 
   useEffect(() => { setSelectedIndex(0); }, [query]);
   useEffect(() => { inputRef.current?.focus(); }, []);
 
+  const runCommand = (cmd: Command) => {
+    recordRecentCommand(cmd.id);
+    cmd.action();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex((prev) => Math.min(prev + 1, filtered.length - 1));
+      setSelectedIndex((prev) => Math.min(prev + 1, flatCommands.length - 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setSelectedIndex((prev) => Math.max(prev - 1, 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (filtered[selectedIndex]) filtered[selectedIndex].action();
+      if (flatCommands[selectedIndex]) runCommand(flatCommands[selectedIndex]);
     }
   };
 
+  let flatIndex = 0;
+
   return (
     <div
-      className="command-palette-overlay fixed inset-0 z-50 flex justify-center pt-[80px]"
+      className="command-palette-overlay fixed inset-0 z-50 flex justify-center pt-[72px]"
       onClick={close}
     >
       <div
-        className="w-[600px] max-h-[400px] bg-forge-sidebar border border-forge-border rounded-md shadow-2xl overflow-hidden flex flex-col"
+        className="w-[720px] max-w-[calc(100vw-32px)] max-h-[560px] bg-forge-sidebar border border-white/10 rounded-lg shadow-2xl overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-2 border-b border-forge-border/50">
+        <div className="p-3 border-b border-white/[0.07] bg-white/[0.025]">
           <input
             ref={inputRef}
             type="text"
-            className="w-full bg-forge-input text-forge-text text-[14px] px-3 py-1.5 rounded outline-none border border-forge-accent/50 focus:border-forge-accent"
-            placeholder="Type a command..."
+            className="w-full bg-forge-input text-forge-text text-[14px] px-3 py-2 rounded-md outline-none border border-forge-accent/45 focus:border-forge-accent"
+            placeholder="Search commands… (try: git, save, theme, ext install publisher.name)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
           />
         </div>
 
-        <div className="flex-1 overflow-y-auto sidebar-scroll">
-          {filtered.length === 0 ? (
+        <div className="flex-1 overflow-y-auto sidebar-scroll py-1">
+          {flatCommands.length === 0 ? (
             <div className="px-4 py-6 text-center text-forge-text/60 text-sm">
               No matching commands
             </div>
           ) : (
-            filtered.map((cmd, idx) => (
-              <div
-                key={cmd.id}
-                onClick={() => cmd.action()}
-                className={`flex items-center justify-between px-4 py-2 cursor-pointer text-[13px] transition-colors
-                  ${idx === selectedIndex
-                    ? 'bg-forge-accent/15 text-forge-accent'
-                    : 'text-forge-text hover:bg-white/5'}
-                `}
-              >
-                <span>{cmd.label}</span>
-                {cmd.shortcut && (
-                  <span className="text-forge-text/50 text-[12px] ml-4 flex-shrink-0">
-                    {cmd.shortcut}
-                  </span>
-                )}
-              </div>
-            ))
+            groups.map((group) => {
+              const CategoryIcon = iconForCategory(group.category);
+              return (
+                <div key={group.category} className="mb-1">
+                  <div className="px-4 py-1.5 text-[10px] uppercase tracking-wider text-forge-text/40 flex items-center gap-1.5 sticky top-0 bg-forge-sidebar/95 backdrop-blur-sm z-10">
+                    <CategoryIcon size={11} />
+                    {group.category}
+                  </div>
+                  {group.commands.map((cmd) => {
+                    const idx = flatIndex++;
+                    const Icon = iconForCategory(cmd.category || 'Other');
+                    return (
+                      <div
+                        key={cmd.id}
+                        onClick={() => runCommand(cmd)}
+                        className={`flex items-center justify-between px-4 py-2 cursor-pointer text-[13px] transition-colors mx-1 rounded-md
+                          ${idx === selectedIndex
+                            ? 'bg-forge-accent/15 text-forge-accent'
+                            : 'text-forge-text hover:bg-white/5'}
+                        `}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <Icon size={15} className="flex-shrink-0 opacity-85" />
+                          <span className="truncate">{cmd.label}</span>
+                        </div>
+                        {cmd.shortcut && (
+                          <span className="text-forge-text/50 text-[11px] ml-4 flex-shrink-0 font-mono">
+                            {cmd.shortcut}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })
           )}
         </div>
       </div>

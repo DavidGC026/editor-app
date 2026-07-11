@@ -75,6 +75,39 @@ export function getLspLanguageId(
   return null;
 }
 
+// ── Document symbols (Outline) ───────────────────────────────────────────
+
+export interface OutlineSymbol {
+  name: string;
+  kind: number;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  depth: number;
+}
+
+function flattenDocumentSymbols(
+  symbols: any[],
+  depth = 0,
+  out: OutlineSymbol[] = [],
+): OutlineSymbol[] {
+  for (const sym of symbols) {
+    if (!sym?.name || !sym?.range?.start) continue;
+    out.push({
+      name: sym.name,
+      kind: typeof sym.kind === 'number' ? sym.kind : 0,
+      startLine: sym.range.start.line + 1,
+      startColumn: sym.range.start.character + 1,
+      endLine: (sym.range.end?.line ?? sym.range.start.line) + 1,
+      depth,
+    });
+    if (Array.isArray(sym.children) && sym.children.length > 0) {
+      flattenDocumentSymbols(sym.children, depth + 1, out);
+    }
+  }
+  return out;
+}
+
 // ── LSP → Monaco conversions ─────────────────────────────────────────────
 
 function convertSeverity(
@@ -605,6 +638,20 @@ class LspClient {
     // Give the server a tick to ingest the change before we follow up with a
     // completion/hover request.
     await new Promise((r) => setTimeout(r, 0));
+  }
+
+  /** Fetch document symbols for outline navigation. Returns [] on failure. */
+  async fetchDocumentSymbols(filePath: string): Promise<OutlineSymbol[]> {
+    if (!getLspLanguageId(filePath) || !window.electronAPI?.lsp) return [];
+    const uri = pathToFileUri(filePath);
+    try {
+      const result = await window.electronAPI.lsp.request('textDocument/documentSymbol', {
+        textDocument: { uri },
+      });
+      return flattenDocumentSymbols(Array.isArray(result) ? result : []);
+    } catch {
+      return [];
+    }
   }
 
   private resetDocState(): void {

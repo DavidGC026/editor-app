@@ -41,7 +41,7 @@ function TopBar() {
   const setAvailableModels = useStore((s) => s.setAIAvailableModels);
   const menuOpen = useStore((s) => s.aiModelMenuOpen);
   const setMenuOpen = useStore((s) => s.setAIModelMenuOpen);
-  const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
+  const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
 
   const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
   const [loadingList, setLoadingList] = useState(false);
@@ -234,7 +234,7 @@ function TopBar() {
         {agentButtons.map((agent) => (
           <button
             key={agent.id}
-            onClick={() => runCommandInTerminal(agent.command)}
+            onClick={() => runAgentInTerminal(agent.command as import('../../types').AgentTerminalId)}
             title={agent.label}
             className="h-7 w-7 rounded flex items-center justify-center text-forge-text hover:text-forge-accent hover:bg-forge-accent/10 transition-colors"
           >

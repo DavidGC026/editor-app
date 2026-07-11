@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useStore } from '../store';
-import { isHtmlFile, type GitChange, type TreeNode } from '../types';
+import { lspClient } from '../lsp/client';
+import { isHtmlFile, type GitChange, type Tab, type TreeNode } from '../types';
 import ExtensionsPanel from './ExtensionsPanel';
+import SettingsPanel from './SettingsPanel';
 import {
   ChevronRight,
   ChevronDown,
@@ -27,6 +29,11 @@ import {
   Hammer,
   Loader2,
   XCircle,
+  Pencil,
+  Save,
+  Trash2,
+  RotateCcw,
+  FileCode2,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -85,6 +92,83 @@ function isStaged(change: GitChange): boolean {
 
 function isUnstaged(change: GitChange): boolean {
   return change.y !== ' ' && change.y !== '';
+}
+
+function toWorkspaceRelPath(workspacePath: string | null, filePath: string): string {
+  if (!workspacePath) return filePath.replace(/\\/g, '/');
+  const root = workspacePath.replace(/\\/g, '/');
+  const normalized = filePath.replace(/\\/g, '/');
+  return normalized.startsWith(root + '/') ? normalized.slice(root.length + 1) : normalized;
+}
+
+function changeForPath(changes: GitChange[], workspacePath: string | null, filePath: string): GitChange | null {
+  const rel = toWorkspaceRelPath(workspacePath, filePath);
+  return changes.find((change) => change.relPath === rel) || null;
+}
+
+function folderHasChanges(changes: GitChange[], workspacePath: string | null, folderPath: string): boolean {
+  const rel = toWorkspaceRelPath(workspacePath, folderPath);
+  const prefix = rel ? `${rel}/` : '';
+  return changes.some((change) => change.relPath.startsWith(prefix));
+}
+
+function gitBadgeClass(change: GitChange): string {
+  const label = gitStatusLabel(change);
+  if (label === 'D') return 'text-red-400';
+  if (label === 'U' || label === 'A') return 'text-forge-accent';
+  return 'text-[#FFCB6B]';
+}
+
+interface RunCommand {
+  id: string;
+  label: string;
+  command: string;
+}
+
+interface PackageScript {
+  name: string;
+  command: string;
+}
+
+const RUN_COMMANDS_STORAGE_KEY = 'forge.runCommands.v1';
+const DEFAULT_RUN_COMMANDS: RunCommand[] = [
+  { id: 'npm-dev', label: 'npm run dev', command: 'npm run dev' },
+  { id: 'npm-test', label: 'npm test', command: 'npm test' },
+  { id: 'npm-build', label: 'npm run build', command: 'npm run build' },
+  { id: 'npm-start', label: 'npm start', command: 'npm start' },
+  { id: 'pnpm-dev', label: 'pnpm dev', command: 'pnpm dev' },
+  { id: 'pnpm-run', label: 'pnpm run', command: 'pnpm run' },
+  { id: 'pnpm-start', label: 'pnpm start', command: 'pnpm start' },
+  { id: 'pnpm-package', label: 'pnpm package', command: 'pnpm package' },
+  { id: 'pnpm-build', label: 'pnpm build', command: 'pnpm build' },
+];
+
+function loadRunCommands(): RunCommand[] {
+  try {
+    const raw = window.localStorage.getItem(RUN_COMMANDS_STORAGE_KEY);
+    if (!raw) return DEFAULT_RUN_COMMANDS;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_RUN_COMMANDS;
+    const commands = parsed
+      .filter((item) => item && typeof item.label === 'string' && typeof item.command === 'string')
+      .map((item) => ({
+        id: typeof item.id === 'string' ? item.id : `cmd-${Date.now()}`,
+        label: item.label,
+        command: item.command,
+      }))
+      .filter((item) => item.label.trim() && item.command.trim());
+    return commands.length > 0 ? commands : DEFAULT_RUN_COMMANDS;
+  } catch {
+    return DEFAULT_RUN_COMMANDS;
+  }
+}
+
+function saveRunCommands(commands: RunCommand[]): void {
+  try {
+    window.localStorage.setItem(RUN_COMMANDS_STORAGE_KEY, JSON.stringify(commands));
+  } catch {
+    /* best-effort */
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -217,6 +301,9 @@ function TreeItem({
   const toggleFolder = useStore((s) => s.toggleFolder);
   const openFile = useStore((s) => s.openFile);
   const activeTabId = useStore((s) => s.activeTabId);
+  const openTabs = useStore((s) => s.openTabs);
+  const workspacePath = useStore((s) => s.workspacePath);
+  const gitChanges = useStore((s) => s.gitChanges);
   const selectedPath = useStore((s) => s.selectedPath);
   const setSelectedPath = useStore((s) => s.setSelectedPath);
   const createNewFile = useStore((s) => s.createNewFile);
@@ -228,6 +315,13 @@ function TreeItem({
   const isActiveFile = activeTabId === node.path;
   const isActiveFolder = isDirectory && activeFolderPaths.has(node.path);
   const isSelected = selectedPath === node.path;
+  const gitChange = !isDirectory ? changeForPath(gitChanges, workspacePath, node.path) : null;
+  const hasNestedGitChange = isDirectory && folderHasChanges(gitChanges, workspacePath, node.path);
+  const hasUnsavedFile = !isDirectory && openTabs.some((tab) => tab.path === node.path && tab.isUnsaved);
+  const hasNestedUnsavedFile = isDirectory && openTabs.some((tab) => (
+    tab.isUnsaved &&
+    toWorkspaceRelPath(workspacePath, tab.path).startsWith(`${toWorkspaceRelPath(workspacePath, node.path)}/`)
+  ));
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -242,7 +336,7 @@ function TreeItem({
 
   // Color logic
   let textColor = '#D0D3DA';
-  if (isDirectory && isActiveFolder) textColor = '#4ADB94';
+  if (isDirectory && isActiveFolder) textColor = '#B65A48';
   else if (!isDirectory && isActiveFile) textColor = '#FFFFFF';
 
   const isRenaming = renameNodeId === node.id;
@@ -262,7 +356,7 @@ function TreeItem({
           style={{
             paddingLeft: `${depth * 14 + 8}px`,
             color: textColor,
-            backgroundColor: isSelected ? 'rgba(74, 219, 148, 0.1)' : 'transparent',
+            backgroundColor: isSelected ? 'rgba(182, 90, 72, 0.1)' : 'transparent',
           }}
         >
           {isDirectory ? (
@@ -291,6 +385,28 @@ function TreeItem({
 
           <span className="truncate text-[13px]" style={{ color: textColor }}>
             {node.name}
+          </span>
+          <span className="ml-auto flex items-center gap-1 pl-2 flex-shrink-0">
+            {(hasUnsavedFile || hasNestedUnsavedFile) && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-forge-text/70"
+                title="Unsaved changes"
+              />
+            )}
+            {gitChange && (
+              <span
+                className={`text-[10px] font-semibold ${gitBadgeClass(gitChange)}`}
+                title={gitStatusTitle(gitChange)}
+              >
+                {gitStatusLabel(gitChange)}
+              </span>
+            )}
+            {!gitChange && hasNestedGitChange && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-forge-accent/80"
+                title="Folder contains Git changes"
+              />
+            )}
           </span>
         </div>
       )}
@@ -556,7 +672,7 @@ function AddDropdown({
     >
       <button
         className="block w-full text-left px-3 py-1.5 text-[13px] transition-colors"
-        style={{ color: hover === 'file' ? '#4ADB94' : '#D3D5DE' }}
+        style={{ color: hover === 'file' ? '#B65A48' : '#D3D5DE' }}
         onMouseEnter={() => setHover('file')}
         onMouseLeave={() => setHover(null)}
         onClick={() => onPick('file')}
@@ -565,7 +681,7 @@ function AddDropdown({
       </button>
       <button
         className="block w-full text-left px-3 py-1.5 text-[13px] transition-colors"
-        style={{ color: hover === 'folder' ? '#4ADB94' : '#D3D5DE' }}
+        style={{ color: hover === 'folder' ? '#B65A48' : '#D3D5DE' }}
         onMouseEnter={() => setHover('folder')}
         onMouseLeave={() => setHover(null)}
         onClick={() => onPick('folder')}
@@ -912,13 +1028,170 @@ function CollapsibleSection({
 function BottomSections() {
   return (
     <div className="flex-shrink-0">
-      <CollapsibleSection title="Outline" icon={<ListTree size={12} />}>
-        <p className="italic">No symbols found in active editor.</p>
-      </CollapsibleSection>
-      <CollapsibleSection title="Timeline" icon={<History size={12} />}>
-        <p className="italic">No timeline entries yet.</p>
-      </CollapsibleSection>
+      <OutlineSection />
+      <TimelineSection />
     </div>
+  );
+}
+
+function activeEditorFilePath(
+  workspacePath: string | null,
+  openTabs: Tab[],
+  activeTabId: string | null,
+): string | null {
+  const tab = openTabs.find((t) => t.id === activeTabId);
+  if (!tab || tab.imageDataUrl || !workspacePath) return null;
+  if (tab.gitDiff) return tab.gitDiff.relPath;
+  const rel = toWorkspaceRelPath(workspacePath, tab.path);
+  return rel || null;
+}
+
+function symbolKindLabel(kind: number): string {
+  const labels: Record<number, string> = {
+    5: 'class', 6: 'method', 12: 'func', 11: 'func', 10: 'prop', 13: 'var',
+    22: 'const', 4: 'field', 8: 'interface', 9: 'module', 3: 'ctor',
+  };
+  return labels[kind] ?? 'sym';
+}
+
+function OutlineSection() {
+  const openTabs = useStore((s) => s.openTabs);
+  const activeTabId = useStore((s) => s.activeTabId);
+  const openFilePath = useStore((s) => s.openFilePath);
+
+  const tab = openTabs.find((t) => t.id === activeTabId);
+  const filePath = tab && !tab.imageDataUrl && !tab.gitDiff ? tab.path : null;
+
+  const [symbols, setSymbols] = useState<import('../lsp/client').OutlineSymbol[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!filePath) {
+      setSymbols([]);
+      return;
+    }
+    setBusy(true);
+    void lspClient.fetchDocumentSymbols(filePath).then((result) => {
+      if (!cancelled) {
+        setSymbols(result);
+        setBusy(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [filePath, tab?.content]);
+
+  const jumpTo = (line: number) => {
+    if (!filePath) return;
+    void openFilePath(filePath, { line });
+  };
+
+  return (
+    <CollapsibleSection title="Outline" icon={<ListTree size={12} />} defaultOpen>
+      {!filePath ? (
+        <p className="italic">No active editor file.</p>
+      ) : busy ? (
+        <p className="italic flex items-center gap-1.5">
+          <Loader2 size={12} className="animate-spin" /> Loading symbols…
+        </p>
+      ) : symbols.length === 0 ? (
+        <p className="italic">No symbols found in active editor.</p>
+      ) : (
+        <div className="space-y-0.5">
+          {symbols.map((sym, i) => (
+            <button
+              key={`${sym.name}-${sym.startLine}-${i}`}
+              onClick={() => jumpTo(sym.startLine)}
+              className="w-full flex items-center gap-1.5 text-left hover:text-forge-accent transition-colors truncate"
+              style={{ paddingLeft: `${sym.depth * 10}px` }}
+              title={`${sym.name} · line ${sym.startLine}`}
+            >
+              <span className="text-[9px] uppercase text-forge-text/35 flex-shrink-0 w-8">
+                {symbolKindLabel(sym.kind)}
+              </span>
+              <span className="truncate">{sym.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </CollapsibleSection>
+  );
+}
+
+function TimelineSection() {
+  const workspacePath = useStore((s) => s.workspacePath);
+  const gitIsRepo = useStore((s) => s.gitIsRepo);
+  const openTabs = useStore((s) => s.openTabs);
+  const activeTabId = useStore((s) => s.activeTabId);
+  const openGitCommitDiff = useStore((s) => s.openGitCommitDiff);
+
+  const relPath = activeEditorFilePath(workspacePath, openTabs, activeTabId);
+  const [entries, setEntries] = useState<import('../types').GitLogEntry[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!workspacePath || !gitIsRepo || !relPath) {
+      setEntries([]);
+      setError(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    window.electronAPI.git
+      .log(workspacePath, relPath, 20)
+      .then((log) => {
+        if (!cancelled) {
+          setEntries(log);
+          setBusy(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setEntries([]);
+          setError((err as Error).message || 'Could not load history.');
+          setBusy(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [workspacePath, gitIsRepo, relPath]);
+
+  return (
+    <CollapsibleSection title="Timeline" icon={<History size={12} />}>
+      {!workspacePath || !gitIsRepo ? (
+        <p className="italic">Not a Git repository.</p>
+      ) : !relPath ? (
+        <p className="italic">Open a file to see its history.</p>
+      ) : busy ? (
+        <p className="italic flex items-center gap-1.5">
+          <Loader2 size={12} className="animate-spin" /> Loading commits…
+        </p>
+      ) : error ? (
+        <p className="text-red-400/80">{error}</p>
+      ) : entries.length === 0 ? (
+        <p className="italic">No commits for this file yet.</p>
+      ) : (
+        <div className="space-y-1">
+          {entries.map((entry) => (
+            <button
+              key={entry.hash}
+              onClick={() => void openGitCommitDiff(relPath, entry)}
+              className="w-full text-left rounded px-1 py-1 hover:bg-white/5 hover:text-forge-accent transition-colors"
+              title={`${entry.author} · ${entry.date}\n${entry.hash}`}
+            >
+              <div className="flex items-center gap-1.5">
+                <GitCommit size={11} className="text-forge-accent/80 flex-shrink-0" />
+                <span className="font-mono text-[10px] text-forge-accent/90">{entry.shortHash}</span>
+                <span className="text-[10px] text-forge-text/40">{entry.date}</span>
+              </div>
+              <div className="truncate text-[11px] mt-0.5">{entry.subject}</div>
+              <div className="truncate text-[10px] text-forge-text/40">{entry.author}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </CollapsibleSection>
   );
 }
 
@@ -937,7 +1210,9 @@ function SourceControlPanel() {
   const gitUnstageFiles = useStore((s) => s.gitUnstageFiles);
   const gitCommitChanges = useStore((s) => s.gitCommitChanges);
   const openFilePath = useStore((s) => s.openFilePath);
+  const openGitDiff = useStore((s) => s.openGitDiff);
   const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
+  const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
 
   const [message, setMessage] = useState('');
 
@@ -949,7 +1224,11 @@ function SourceControlPanel() {
   const unstaged = gitChanges.filter((change) => !isStaged(change) || isUnstaged(change));
   const canCommit = staged.length > 0 && message.trim().length > 0 && !gitBusy;
 
-  const openChange = (change: GitChange) => {
+  const openChangeDiff = (change: GitChange, mode: 'unstaged' | 'staged') => {
+    void openGitDiff(change.relPath, mode === 'staged');
+  };
+
+  const openChangeFile = (change: GitChange) => {
     if (!workspacePath) return;
     void openFilePath(joinPath(workspacePath, change.relPath));
   };
@@ -966,8 +1245,8 @@ function SourceControlPanel() {
       className="group flex items-center gap-2 h-[28px] px-2 rounded hover:bg-white/5 text-[12px]"
     >
       <button
-        onClick={() => openChange(change)}
-        title={change.relPath}
+        onClick={() => openChangeDiff(change, mode)}
+        title={`${change.relPath} — clic para diff, icono derecho para abrir archivo`}
         className="flex items-center gap-2 min-w-0 flex-1 text-left"
       >
         <span
@@ -977,6 +1256,14 @@ function SourceControlPanel() {
           {gitStatusLabel(change)}
         </span>
         <span className="truncate text-forge-text">{change.relPath}</span>
+      </button>
+      <button
+        onClick={() => openChangeFile(change)}
+        disabled={gitBusy}
+        title="Open file"
+        className="opacity-0 group-hover:opacity-100 text-forge-text hover:text-forge-accent disabled:opacity-30"
+      >
+        <FileCode2 size={14} />
       </button>
       {mode === 'unstaged' ? (
         <button
@@ -1131,18 +1418,107 @@ function SourceControlPanel() {
 function RunDebugPanel() {
   const workspacePath = useStore((s) => s.workspacePath);
   const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
+  const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
+  const [commands, setCommands] = useState<RunCommand[]>(() => loadRunCommands());
+  const [packageScripts, setPackageScripts] = useState<PackageScript[]>([]);
+  const [packageError, setPackageError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftLabel, setDraftLabel] = useState('');
+  const [draftCommand, setDraftCommand] = useState('');
 
-  const commands = [
-    { id: 'dev', label: 'npm run dev', command: 'npm run dev', icon: <Play size={14} /> },
-    { id: 'test', label: 'npm test', command: 'npm test', icon: <CheckCircle2 size={14} /> },
-    { id: 'build', label: 'npm run build', command: 'npm run build', icon: <Hammer size={14} /> },
-    { id: 'start', label: 'npm start', command: 'npm start', icon: <Package size={14} /> },
-  ];
+  useEffect(() => {
+    saveRunCommands(commands);
+  }, [commands]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!workspacePath) {
+      setPackageScripts([]);
+      setPackageError(null);
+      return;
+    }
+
+    const packagePath = joinPath(workspacePath, 'package.json');
+    window.electronAPI.readFile(packagePath)
+      .then((text) => {
+        if (cancelled) return;
+        const parsed = JSON.parse(text);
+        const scripts = parsed?.scripts && typeof parsed.scripts === 'object'
+          ? Object.entries(parsed.scripts)
+              .filter((entry): entry is [string, string] => (
+                typeof entry[0] === 'string' && typeof entry[1] === 'string'
+              ))
+              .map(([name]) => ({ name, command: `pnpm run ${name}` }))
+          : [];
+        setPackageScripts(scripts);
+        setPackageError(null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPackageScripts([]);
+        setPackageError(null);
+      });
+
+    return () => { cancelled = true; };
+  }, [workspacePath]);
+
+  const beginEdit = (command: RunCommand) => {
+    setEditingId(command.id);
+    setDraftLabel(command.label);
+    setDraftCommand(command.command);
+  };
+
+  const saveEdit = () => {
+    if (!editingId) return;
+    const label = draftLabel.trim();
+    const command = draftCommand.trim();
+    if (!label || !command) return;
+    setCommands((prev) =>
+      prev.map((item) => item.id === editingId ? { ...item, label, command } : item),
+    );
+    setEditingId(null);
+  };
+
+  const addCommand = () => {
+    const next: RunCommand = {
+      id: `cmd-${Date.now()}`,
+      label: 'New command',
+      command: 'echo hello',
+    };
+    setCommands((prev) => [...prev, next]);
+    beginEdit(next);
+  };
+
+  const deleteCommand = (id: string) => {
+    setCommands((prev) => prev.filter((item) => item.id !== id));
+    if (editingId === id) setEditingId(null);
+  };
+
+  const resetCommands = () => {
+    setCommands(DEFAULT_RUN_COMMANDS);
+    setEditingId(null);
+  };
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="h-[35px] flex items-center justify-between px-4 text-[11px] uppercase tracking-wide text-forge-text/70 flex-shrink-0">
         <span>Run and Debug</span>
+        <span className="flex items-center gap-1">
+          <button
+            onClick={addCommand}
+            title="Add command"
+            className="text-forge-text hover:text-forge-accent"
+          >
+            <Plus size={13} />
+          </button>
+          <button
+            onClick={resetCommands}
+            title="Restore defaults"
+            className="text-forge-text hover:text-forge-accent"
+          >
+            <RotateCcw size={13} />
+          </button>
+        </span>
       </div>
 
       {!workspacePath ? (
@@ -1152,29 +1528,127 @@ function RunDebugPanel() {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto sidebar-scroll px-3 pb-4">
-          <div className="text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
-            Common Tasks
+          {packageScripts.length > 0 && (
+            <>
+              <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
+                <span>Package Scripts</span>
+                <span>{packageScripts.length}</span>
+              </div>
+              <div className="space-y-1 mb-4">
+                {packageScripts.map((script) => (
+                  <button
+                    key={script.name}
+                    onClick={() => runCommandInTerminal(script.command)}
+                    className="w-full flex items-center gap-2 rounded px-2 py-2 text-left hover:bg-white/5 transition-colors"
+                  >
+                    <span className="w-7 h-7 rounded bg-forge-accent/10 text-forge-accent border border-forge-accent/20 flex items-center justify-center flex-shrink-0">
+                      <Package size={14} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12px] text-forge-text-strong truncate">
+                        {script.name}
+                      </span>
+                      <span className="block text-[10px] text-forge-text/45 truncate">
+                        {script.command}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {packageError && (
+            <p className="mb-3 text-[11px] text-red-400/90">{packageError}</p>
+          )}
+
+          <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
+            <span>Commands</span>
+            <span>{commands.length}</span>
           </div>
           <div className="space-y-1">
-            {commands.map((cmd) => (
-              <button
-                key={cmd.id}
-                onClick={() => runCommandInTerminal(cmd.command)}
-                className="w-full flex items-center gap-2 rounded px-2 py-2 text-left hover:bg-white/5 transition-colors"
-              >
-                <span className="w-7 h-7 rounded bg-forge-accent/10 text-forge-accent border border-forge-accent/20 flex items-center justify-center flex-shrink-0">
-                  {cmd.icon}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[12px] text-forge-text-strong truncate">
-                    {cmd.label}
-                  </span>
-                  <span className="block text-[10px] text-forge-text/45 truncate">
-                    Run in integrated terminal
-                  </span>
-                </span>
-              </button>
-            ))}
+            {commands.map((cmd) => {
+              const isEditing = editingId === cmd.id;
+              if (isEditing) {
+                return (
+                  <div
+                    key={cmd.id}
+                    className="rounded border border-forge-accent/40 bg-forge-input/50 p-2"
+                  >
+                    <input
+                      value={draftLabel}
+                      onChange={(e) => setDraftLabel(e.target.value)}
+                      placeholder="Label"
+                      className="w-full bg-forge-input text-forge-text text-[12px] px-2 py-1 rounded outline-none border border-transparent focus:border-forge-accent/60"
+                    />
+                    <input
+                      value={draftCommand}
+                      onChange={(e) => setDraftCommand(e.target.value)}
+                      placeholder="Command"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveEdit();
+                        if (e.key === 'Escape') setEditingId(null);
+                      }}
+                      className="mt-1.5 w-full bg-forge-input text-forge-text text-[12px] px-2 py-1 rounded outline-none border border-transparent focus:border-forge-accent/60"
+                    />
+                    <div className="mt-2 flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => setEditingId(null)}
+                        className="w-7 h-6 flex items-center justify-center rounded text-forge-text hover:bg-white/5"
+                        title="Cancel"
+                      >
+                        <XCircle size={13} />
+                      </button>
+                      <button
+                        onClick={saveEdit}
+                        disabled={!draftLabel.trim() || !draftCommand.trim()}
+                        className="w-7 h-6 flex items-center justify-center rounded text-forge-accent hover:bg-forge-accent/10 disabled:opacity-40"
+                        title="Save"
+                      >
+                        <Save size={13} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={cmd.id}
+                  className="group flex items-center gap-2 rounded px-2 py-2 hover:bg-white/5 transition-colors"
+                >
+                  <button
+                    onClick={() => runCommandInTerminal(cmd.command)}
+                    className="flex items-center gap-2 text-left min-w-0 flex-1"
+                  >
+                    <span className="w-7 h-7 rounded bg-forge-accent/10 text-forge-accent border border-forge-accent/20 flex items-center justify-center flex-shrink-0">
+                      <Play size={14} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12px] text-forge-text-strong truncate">
+                        {cmd.label}
+                      </span>
+                      <span className="block text-[10px] text-forge-text/45 truncate">
+                        {cmd.command}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => beginEdit(cmd)}
+                    className="opacity-0 group-hover:opacity-100 text-forge-text hover:text-forge-accent"
+                    title="Edit command"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    onClick={() => deleteCommand(cmd.id)}
+                    className="opacity-0 group-hover:opacity-100 text-forge-text hover:text-red-400"
+                    title="Delete command"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
 
           <div className="mt-4 text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
@@ -1188,7 +1662,7 @@ function RunDebugPanel() {
             ].map(([label, command]) => (
               <button
                 key={command}
-                onClick={() => runCommandInTerminal(command)}
+                onClick={() => runAgentInTerminal(command as import('../types').AgentTerminalId)}
                 className="w-full flex items-center gap-2 rounded px-2 py-2 text-left hover:bg-white/5 transition-colors"
               >
                 <span className="w-7 h-7 rounded bg-forge-input border border-forge-border/60 text-forge-accent flex items-center justify-center flex-shrink-0">
@@ -1230,8 +1704,12 @@ function relativePath(workspacePath: string | null, filePath: string): string {
 function SearchPanel() {
   const workspacePath = useStore((s) => s.workspacePath);
   const openFilePath = useStore((s) => s.openFilePath);
+  const refreshFileTree = useStore((s) => s.refreshFileTree);
+  const [mode, setMode] = useState<'search' | 'replace'>('search');
   const [query, setQuery] = useState('');
+  const [replaceWith, setReplaceWith] = useState('');
   const [matches, setMatches] = useState<SearchMatch[]>([]);
+  const [replacePreview, setReplacePreview] = useState<import('../types').ReplacePreviewResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -1246,6 +1724,7 @@ function SearchPanel() {
     }
     setBusy(true);
     setError(null);
+    setReplacePreview(null);
     try {
       const result = await window.electronAPI.agent.buscarEnProyecto(workspacePath, q);
       setMatches(result.matches || []);
@@ -1259,21 +1738,85 @@ function SearchPanel() {
     }
   }, [workspacePath]);
 
+  const runReplacePreview = useCallback(async () => {
+    if (!workspacePath || !query.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.electronAPI.agent.reemplazarEnProyecto(
+        workspacePath,
+        query,
+        replaceWith,
+        { previewOnly: true },
+      );
+      setReplacePreview(result);
+    } catch (err) {
+      setReplacePreview(null);
+      setError((err as Error).message || 'Replace preview failed.');
+    } finally {
+      setBusy(false);
+    }
+  }, [workspacePath, query, replaceWith]);
+
+  const applyReplace = useCallback(async () => {
+    if (!workspacePath || !query.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.electronAPI.agent.reemplazarEnProyecto(
+        workspacePath,
+        query,
+        replaceWith,
+        { previewOnly: false },
+      );
+      setReplacePreview(result);
+      await refreshFileTree();
+    } catch (err) {
+      setError((err as Error).message || 'Replace failed.');
+    } finally {
+      setBusy(false);
+    }
+  }, [workspacePath, query, replaceWith, refreshFileTree]);
+
   useEffect(() => {
+    if (mode !== 'search') return;
     const timer = window.setTimeout(() => {
       void runSearch(query);
     }, query.trim().length >= 2 ? 220 : 0);
     return () => window.clearTimeout(timer);
-  }, [query, runSearch]);
+  }, [query, runSearch, mode]);
+
+  useEffect(() => {
+    if (mode !== 'replace') return;
+    setReplacePreview(null);
+    const timer = window.setTimeout(() => {
+      if (query.trim()) void runReplacePreview();
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [query, replaceWith, mode, runReplacePreview]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="h-[35px] flex items-center justify-between px-4 text-[11px] uppercase tracking-wide text-forge-text/70 flex-shrink-0">
-        <span>Search</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setMode('search')}
+            className={mode === 'search' ? 'text-forge-accent' : 'hover:text-forge-text'}
+          >
+            Search
+          </button>
+          <span className="text-forge-text/25">|</span>
+          <button
+            onClick={() => setMode('replace')}
+            className={mode === 'replace' ? 'text-forge-accent' : 'hover:text-forge-text'}
+          >
+            Replace
+          </button>
+        </div>
         {busy && <Loader2 size={12} className="animate-spin text-forge-accent" />}
       </div>
 
-      <div className="px-3 pb-2 flex-shrink-0">
+      <div className="px-3 pb-2 flex-shrink-0 space-y-1.5">
         <div className="relative">
           <Search
             size={13}
@@ -1282,21 +1825,48 @@ function SearchPanel() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search in files"
+            placeholder={mode === 'search' ? 'Search in files' : 'Find in project'}
             spellCheck={false}
             className="w-full bg-forge-input text-forge-text text-[12px] pl-7 pr-7 py-1.5 rounded outline-none border border-transparent focus:border-forge-accent/60"
           />
           {query && (
             <button
               onClick={() => setQuery('')}
-              title="Clear search"
+              title="Clear"
               className="absolute right-1.5 top-1/2 -translate-y-1/2 text-forge-text/50 hover:text-forge-text"
             >
               <XCircle size={13} />
             </button>
           )}
         </div>
-        {error && <p className="mt-2 text-[11px] text-red-400/90">{error}</p>}
+        {mode === 'replace' && (
+          <input
+            value={replaceWith}
+            onChange={(e) => setReplaceWith(e.target.value)}
+            placeholder="Replace with"
+            spellCheck={false}
+            className="w-full bg-forge-input text-forge-text text-[12px] px-2 py-1.5 rounded outline-none border border-transparent focus:border-forge-accent/60"
+          />
+        )}
+        {mode === 'replace' && query.trim() && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void runReplacePreview()}
+              disabled={busy}
+              className="px-2 py-1 text-[11px] rounded border border-forge-border/60 hover:border-forge-accent/50 disabled:opacity-40"
+            >
+              Preview
+            </button>
+            <button
+              onClick={() => void applyReplace()}
+              disabled={busy || !replacePreview || replacePreview.totalReplacements === 0}
+              className="px-2 py-1 text-[11px] rounded bg-forge-accent/15 text-forge-accent hover:bg-forge-accent/25 disabled:opacity-40"
+            >
+              Replace All
+            </button>
+          </div>
+        )}
+        {error && <p className="text-[11px] text-red-400/90">{error}</p>}
       </div>
 
       <div className="flex-1 overflow-y-auto sidebar-scroll px-3 pb-4">
@@ -1305,44 +1875,78 @@ function SearchPanel() {
             <Search size={32} />
             <p className="text-[12px]">Open a folder to search</p>
           </div>
-        ) : query.trim().length < 2 ? (
+        ) : mode === 'search' ? (
+          query.trim().length < 2 ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-10 text-forge-text/40">
+              <Search size={32} />
+              <p className="text-[12px]">Type at least 2 characters</p>
+            </div>
+          ) : matches.length === 0 && !busy ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-10 text-forge-text/40">
+              <Search size={32} />
+              <p className="text-[12px]">No results</p>
+            </div>
+          ) : (
+            <>
+              <div className="text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
+                Results ({matches.length}{truncated ? '+' : ''})
+              </div>
+              <div className="space-y-1">
+                {matches.map((match, index) => (
+                  <button
+                    key={`${match.path}:${match.line}:${index}`}
+                    onClick={() => void openFilePath(match.path, { line: match.line })}
+                    className="w-full rounded px-2 py-1.5 text-left hover:bg-white/5 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[12px] text-forge-text-strong truncate">
+                        {relativePath(workspacePath, match.path)}
+                      </span>
+                      <span className="text-[10px] text-forge-text/40 flex-shrink-0">
+                        {match.line}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] leading-snug text-forge-text/55 truncate">
+                      {match.preview.trim()}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )
+        ) : !query.trim() ? (
           <div className="flex flex-col items-center justify-center gap-3 py-10 text-forge-text/40">
             <Search size={32} />
-            <p className="text-[12px]">Type at least 2 characters</p>
+            <p className="text-[12px]">Enter text to find and replace</p>
           </div>
-        ) : matches.length === 0 && !busy ? (
-          <div className="flex flex-col items-center justify-center gap-3 py-10 text-forge-text/40">
-            <Search size={32} />
-            <p className="text-[12px]">No results</p>
-          </div>
-        ) : (
+        ) : !replacePreview && !busy ? (
+          <div className="py-6 text-[12px] text-forge-text/50 text-center">No preview yet</div>
+        ) : replacePreview && replacePreview.totalReplacements === 0 && !busy ? (
+          <div className="py-6 text-[12px] text-forge-text/50 text-center">No matches to replace</div>
+        ) : replacePreview ? (
           <>
             <div className="text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
-              Results ({matches.length}{truncated ? '+' : ''})
+              Preview — {replacePreview.filesChanged} files, {replacePreview.totalReplacements} replacements
+              {replacePreview.applied ? ' (applied)' : ''}
             </div>
-            <div className="space-y-1">
-              {matches.map((match, index) => (
-                <button
-                  key={`${match.path}:${match.line}:${index}`}
-                  onClick={() => void openFilePath(match.path, { line: match.line })}
-                  className="w-full rounded px-2 py-1.5 text-left hover:bg-white/5 transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[12px] text-forge-text-strong truncate">
-                      {relativePath(workspacePath, match.path)}
-                    </span>
-                    <span className="text-[10px] text-forge-text/40 flex-shrink-0">
-                      {match.line}
-                    </span>
+            <div className="space-y-2">
+              {replacePreview.changes.map((change) => (
+                <div key={change.path} className="rounded border border-forge-border/40 p-2">
+                  <div className="text-[12px] text-forge-text-strong truncate mb-1">
+                    {relativePath(workspacePath, change.path)}
+                    <span className="text-forge-text/40 ml-2">×{change.count}</span>
                   </div>
-                  <div className="mt-0.5 text-[11px] leading-snug text-forge-text/55 truncate">
-                    {match.preview.trim()}
-                  </div>
-                </button>
+                  {change.previews.map((preview) => (
+                    <div key={`${change.path}-${preview.line}`} className="text-[11px] font-mono mt-1">
+                      <div className="text-red-400/80 truncate">− {preview.before}</div>
+                      <div className="text-green-400/80 truncate">+ {preview.after}</div>
+                    </div>
+                  ))}
+                </div>
               ))}
             </div>
           </>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -1376,17 +1980,21 @@ export default function SideBar() {
         return <RunDebugPanel />;
       case 'extensions':
         return <ExtensionsPanel />;
+      case 'settings':
+        return <SettingsPanel />;
       default:
         return <ExplorerPanel />;
     }
   };
+
+  const showBottomSections = activeSidebarPanel === 'explorer';
 
   return (
     <div className="w-full h-full bg-forge-sidebar flex flex-col border-r border-forge-border/40 overflow-hidden">
       <div className="flex-1 overflow-hidden flex flex-col">
         {renderTopArea()}
       </div>
-      <BottomSections />
+      {showBottomSections && <BottomSections />}
     </div>
   );
 }

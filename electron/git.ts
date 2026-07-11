@@ -21,6 +21,14 @@ export interface GitStatusPayload {
   changes: GitChange[];
 }
 
+export interface GitLogEntry {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  subject: string;
+}
+
 function runGit(
   cwd: string,
   args: string[],
@@ -128,4 +136,101 @@ export async function gitCommit(workspacePath: string, message: string): Promise
   }
   const stdout = await gitOrThrow(workspacePath, ['commit', '-m', message]);
   return stdout.trim();
+}
+
+export async function gitDiff(
+  workspacePath: string,
+  relPath: string,
+  staged = false,
+): Promise<string> {
+  if (!relPath.trim()) return '';
+  const args = staged
+    ? ['diff', '--cached', '--', relPath]
+    : ['diff', '--', relPath];
+  return gitOrThrow(workspacePath, args);
+}
+
+export interface GitFileVersions {
+  /** Content at HEAD (or empty for new files). */
+  original: string;
+  /** Working-tree or index content, depending on `staged`. */
+  modified: string;
+}
+
+async function gitShowRef(cwd: string, ref: string, relPath: string): Promise<string> {
+  try {
+    return await gitOrThrow(cwd, ['show', `${ref}:${relPath}`]);
+  } catch {
+    return '';
+  }
+}
+
+async function readWorkingFile(cwd: string, relPath: string): Promise<string> {
+  const { readFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  try {
+    return await readFile(join(cwd, relPath), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+/** Return the two sides of a diff for Monaco's diff editor.
+ *  - unstaged: HEAD vs working tree
+ *  - staged:   HEAD vs index */
+export async function gitGetFileVersions(
+  workspacePath: string,
+  relPath: string,
+  staged = false,
+): Promise<GitFileVersions> {
+  if (!relPath.trim()) return { original: '', modified: '' };
+  const original = await gitShowRef(workspacePath, 'HEAD', relPath);
+  const modified = staged
+    ? await gitShowRef(workspacePath, '', relPath)
+    : await readWorkingFile(workspacePath, relPath);
+  return { original, modified };
+}
+
+/** Diff sides for a specific commit: parent version vs commit version. */
+export async function gitGetCommitFileVersions(
+  workspacePath: string,
+  relPath: string,
+  commitHash: string,
+): Promise<GitFileVersions> {
+  if (!relPath.trim() || !commitHash.trim()) return { original: '', modified: '' };
+  const modified = await gitShowRef(workspacePath, commitHash, relPath);
+  let original = '';
+  try {
+    original = await gitOrThrow(workspacePath, ['show', `${commitHash}^:${relPath}`]);
+  } catch {
+    original = '';
+  }
+  return { original, modified };
+}
+
+export async function gitLog(
+  workspacePath: string,
+  relPath?: string,
+  limit = 30,
+): Promise<GitLogEntry[]> {
+  const safeLimit = Math.max(1, Math.min(100, Math.round(limit)));
+  const pretty = '%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1e';
+  const args = [
+    'log',
+    `-${safeLimit}`,
+    '--date=short',
+    `--pretty=format:${pretty}`,
+  ];
+  if (relPath?.trim()) args.push('--', relPath);
+
+  const stdout = await gitOrThrow(workspacePath, args);
+  return stdout
+    .split('\x1e')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [hash = '', shortHash = '', author = '', date = '', subject = ''] = entry.split('\x1f');
+      return { hash, shortHash, author, date, subject };
+    })
+    .filter((entry) => entry.hash && entry.subject);
 }

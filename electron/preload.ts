@@ -52,6 +52,15 @@ export interface ElectronAPI {
   minimize: () => void;
   maximize: () => void;
   close: () => void;
+  // Native edit commands
+  edit: {
+    undo: () => void;
+    redo: () => void;
+    cut: () => void;
+    copy: () => void;
+    paste: () => void;
+    selectAll: () => void;
+  };
   // Terminal
   terminalCreate: (opts: { cwd?: string; cols?: number; rows?: number }) => Promise<{ id: string }>;
   terminalWrite: (id: string, data: string) => void;
@@ -134,6 +143,18 @@ export interface ElectronAPI {
     stage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
     unstage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
     commit: (workspacePath: string, message: string) => Promise<string>;
+    diff: (workspacePath: string, relPath: string, staged?: boolean) => Promise<string>;
+    fileVersions: (
+      workspacePath: string,
+      relPath: string,
+      staged?: boolean,
+    ) => Promise<{ original: string; modified: string }>;
+    commitFileVersions: (
+      workspacePath: string,
+      relPath: string,
+      commitHash: string,
+    ) => Promise<{ original: string; modified: string }>;
+    log: (workspacePath: string, relPath?: string, limit?: number) => Promise<any[]>;
   };
   // Extensions (VSIX: themes + snippets)
   ext: {
@@ -180,6 +201,12 @@ export interface ElectronAPI {
       matches: { path: string; line: number; preview: string }[];
       truncated: boolean;
     }>;
+    reemplazarEnProyecto: (
+      workspacePath: string,
+      search: string,
+      replace: string,
+      options?: { previewOnly?: boolean },
+    ) => Promise<any>;
     initContext: (workspacePath: string) => Promise<{
       tree: string;
       manifestFiles: { path: string; relPath: string; content: string }[];
@@ -255,6 +282,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
+  // Native edit commands
+  edit: {
+    undo: () => ipcRenderer.send('edit:undo'),
+    redo: () => ipcRenderer.send('edit:redo'),
+    cut: () => ipcRenderer.send('edit:cut'),
+    copy: () => ipcRenderer.send('edit:copy'),
+    paste: () => ipcRenderer.send('edit:paste'),
+    selectAll: () => ipcRenderer.send('edit:selectAll'),
+  },
   // Terminal
   terminalCreate: (opts: { cwd?: string; cols?: number; rows?: number }) =>
     ipcRenderer.invoke('terminal:create', opts),
@@ -406,6 +442,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('git:unstage', workspacePath, relPaths),
     commit: (workspacePath: string, message: string) =>
       ipcRenderer.invoke('git:commit', workspacePath, message),
+    diff: (workspacePath: string, relPath: string, staged?: boolean) =>
+      ipcRenderer.invoke('git:diff', workspacePath, relPath, staged),
+    fileVersions: (workspacePath: string, relPath: string, staged?: boolean) =>
+      ipcRenderer.invoke('git:fileVersions', workspacePath, relPath, staged),
+    commitFileVersions: (workspacePath: string, relPath: string, commitHash: string) =>
+      ipcRenderer.invoke('git:commitFileVersions', workspacePath, relPath, commitHash),
+    log: (workspacePath: string, relPath?: string, limit?: number) =>
+      ipcRenderer.invoke('git:log', workspacePath, relPath, limit),
   },
   // ── Extensions (VSIX) ─────────────────────────────────────────────
   ext: {
@@ -474,6 +518,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('agent:listarCarpeta', workspacePath, ruta),
     buscarEnProyecto: (workspacePath: string, texto: string) =>
       ipcRenderer.invoke('agent:buscarEnProyecto', workspacePath, texto),
+    reemplazarEnProyecto: (
+      workspacePath: string,
+      search: string,
+      replace: string,
+      options?: { previewOnly?: boolean },
+    ) => ipcRenderer.invoke('agent:reemplazarEnProyecto', workspacePath, search, replace, options),
     initContext: (workspacePath: string) =>
       ipcRenderer.invoke('agent:initContext', workspacePath),
     snapshotFolder: (workspacePath: string, folderPath: string) =>

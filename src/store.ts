@@ -15,7 +15,10 @@ import {
   InstalledExtension,
   MarketplaceSearchResult,
   GitChange,
+  GitLogEntry,
   Problem,
+  AgentTerminalId,
+  TerminalSession,
 } from './types';
 import { lspClient } from './lsp/client';
 import { applyExtensions, isThemeAvailable } from './extensions/registry';
@@ -75,16 +78,21 @@ interface EditorState {
   bottomPanelHeight: number;
 
   // Terminal
-  /** Id of the currently-mounted pty (set by BottomPanel/XTermView). */
-  activeTerminalId: string | null;
-  /** Command waiting for the integrated terminal to mount. */
-  pendingTerminalCommand: string | null;
+  terminalSessions: TerminalSession[];
+  activeTerminalSessionId: string | null;
 
   // Editor state
   cursorPosition: CursorPosition;
   commandPaletteOpen: boolean;
   /** Monaco / terminal font size in CSS pixels. */
   editorFontSize: number;
+  autoSave: boolean;
+  formatOnSave: boolean;
+  wordWrap: boolean;
+  minimapEnabled: boolean;
+  tabSize: number;
+  /** Git diff view mode — inline or side-by-side. */
+  gitDiffMode: 'inline' | 'side-by-side';
 
   // ── Live Server ─────────────────────────────────────────────────────
   /** True while the local HTTP server (port 5500) is up. */
@@ -195,6 +203,18 @@ interface EditorState {
   gitUnstageFiles: (relPaths: string[]) => Promise<void>;
   /** Commits staged changes. Resolves true on success. */
   gitCommitChanges: (message: string) => Promise<boolean>;
+  /** Open a read-only Git diff tab for the given file. */
+  openGitDiff: (relPath: string, staged?: boolean) => Promise<void>;
+  /** Open a historical diff for one commit (parent vs commit). */
+  openGitCommitDiff: (relPath: string, entry: GitLogEntry) => Promise<void>;
+  setGitDiffMode: (mode: 'inline' | 'side-by-side') => void;
+  /** Toggle diff mode on the active git-diff tab, if any. */
+  toggleActiveGitDiffMode: () => void;
+  /** Registered by MonacoWrapper — formats the active editor document. */
+  formatActiveDocument: (() => Promise<void>) | null;
+  registerFormatActiveDocument: (fn: (() => Promise<void>) | null) => void;
+  /** Debounced auto-save scheduler (no-op when autoSave is off). */
+  scheduleAutoSave: (tabId: string) => void;
 
   // ── Problems (LSP diagnostics) ──────────────────────────────────────
   problems: Problem[];
@@ -259,8 +279,15 @@ interface EditorState {
   setBottomTab: (tab: BottomTab) => void;
   setSidebarWidth: (width: number) => void;
   setBottomPanelHeight: (height: number) => void;
-  setActiveTerminalId: (id: string | null) => void;
+  ensureTerminalSession: () => string;
+  createTerminalSession: (label?: string) => string;
+  closeTerminalSession: (sessionId: string) => void;
+  setActiveTerminalSession: (sessionId: string) => void;
+  registerTerminalPty: (sessionId: string, ptyId: string | null) => void;
+  runCommandInTerminalSession: (sessionId: string, command: string) => void;
   runCommandInTerminal: (command: string) => void;
+  /** Opens or focuses a dedicated terminal for an agent CLI. */
+  runAgentInTerminal: (agentId: AgentTerminalId) => void;
   /** Send `cd "<path>"` (newline-appended) to the currently-active pty. */
   sendCdToActiveTerminal: (workspacePath: string) => void;
   setCursorPosition: (pos: CursorPosition) => void;
@@ -268,6 +295,12 @@ interface EditorState {
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
+  setAutoSave: (enabled: boolean) => void;
+  setFormatOnSave: (enabled: boolean) => void;
+  setWordWrap: (enabled: boolean) => void;
+  setMinimapEnabled: (enabled: boolean) => void;
+  setTabSize: (size: number) => void;
+  setEditorFontSize: (size: number) => void;
   setSelectedPath: (selection: SelectedNode | null) => void;
 
   // ── Live Server actions ─────────────────────────────────────────────
@@ -456,6 +489,106 @@ const DEFAULT_EDITOR_FONT_SIZE = 14;
 const MIN_EDITOR_FONT_SIZE = 8;
 const MAX_EDITOR_FONT_SIZE = 32;
 const EDITOR_FONT_SIZE_STEP = 1;
+const SETTINGS_STORAGE_KEY = 'forge.editorSettings.v1';
+
+interface PersistedEditorSettings {
+  autoSave: boolean;
+  formatOnSave: boolean;
+  wordWrap: boolean;
+  minimapEnabled: boolean;
+  tabSize: number;
+  gitDiffMode: 'inline' | 'side-by-side';
+  editorFontSize: number;
+}
+
+const DEFAULT_EDITOR_SETTINGS: PersistedEditorSettings = {
+  autoSave: false,
+  formatOnSave: false,
+  wordWrap: false,
+  minimapEnabled: true,
+  tabSize: 2,
+  gitDiffMode: 'side-by-side',
+  editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
+};
+
+function clampTabSize(size: number): number {
+  if (!Number.isFinite(size)) return DEFAULT_EDITOR_SETTINGS.tabSize;
+  return Math.max(1, Math.min(8, Math.round(size)));
+}
+
+function clampEditorFontSize(size: number): number {
+  if (!Number.isFinite(size)) return DEFAULT_EDITOR_FONT_SIZE;
+  return Math.max(MIN_EDITOR_FONT_SIZE, Math.min(MAX_EDITOR_FONT_SIZE, Math.round(size)));
+}
+
+function snapshotEditorSettings(state: Pick<
+  EditorState,
+  'autoSave' | 'formatOnSave' | 'wordWrap' | 'minimapEnabled' | 'tabSize' | 'gitDiffMode' | 'editorFontSize'
+>): PersistedEditorSettings {
+  return {
+    autoSave: state.autoSave,
+    formatOnSave: state.formatOnSave,
+    wordWrap: state.wordWrap,
+    minimapEnabled: state.minimapEnabled,
+    tabSize: state.tabSize,
+    gitDiffMode: state.gitDiffMode,
+    editorFontSize: state.editorFontSize,
+  };
+}
+
+function loadEditorSettings(): PersistedEditorSettings {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return DEFAULT_EDITOR_SETTINGS;
+    const parsed = JSON.parse(raw);
+    return {
+      autoSave: Boolean(parsed?.autoSave),
+      formatOnSave: Boolean(parsed?.formatOnSave),
+      wordWrap: Boolean(parsed?.wordWrap),
+      minimapEnabled:
+        typeof parsed?.minimapEnabled === 'boolean'
+          ? parsed.minimapEnabled
+          : DEFAULT_EDITOR_SETTINGS.minimapEnabled,
+      tabSize: clampTabSize(Number(parsed?.tabSize ?? DEFAULT_EDITOR_SETTINGS.tabSize)),
+      gitDiffMode:
+        parsed?.gitDiffMode === 'inline' || parsed?.gitDiffMode === 'side-by-side'
+          ? parsed.gitDiffMode
+          : DEFAULT_EDITOR_SETTINGS.gitDiffMode,
+      editorFontSize: clampEditorFontSize(
+        Number(parsed?.editorFontSize ?? DEFAULT_EDITOR_SETTINGS.editorFontSize),
+      ),
+    };
+  } catch {
+    return DEFAULT_EDITOR_SETTINGS;
+  }
+}
+
+function persistEditorSettings(settings: PersistedEditorSettings): void {
+  try {
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    /* best-effort */
+  }
+}
+
+const initialEditorSettings = loadEditorSettings();
+
+let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let autoSaveTabId: string | null = null;
+
+const AGENT_TERMINAL_CONFIG: Record<AgentTerminalId, { label: string; command: string }> = {
+  codex: { label: 'Codex', command: 'codex' },
+  claude: { label: 'Claude Code', command: 'claude' },
+  'cursor-agent': { label: 'Cursor Agent', command: 'cursor-agent' },
+};
+
+function buildTerminalCommand(workspacePath: string | null, command: string): string {
+  const trimmed = command.trim();
+  const escapedWorkspace = workspacePath?.replace(/"/g, '\\"');
+  return escapedWorkspace
+    ? ` cd "${escapedWorkspace}" && ${trimmed}\r`
+    : ` ${trimmed}\r`;
+}
 
 export const useStore = create<EditorState>((set, get) => ({
   // Initial state
@@ -474,11 +607,17 @@ export const useStore = create<EditorState>((set, get) => ({
   activeBottomTab: 'terminal',
   sidebarWidth: 250,
   bottomPanelHeight: 260,
-  activeTerminalId: null,
-  pendingTerminalCommand: null,
+  terminalSessions: [],
+  activeTerminalSessionId: null,
   cursorPosition: { line: 1, column: 1 },
   commandPaletteOpen: false,
-  editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
+  editorFontSize: initialEditorSettings.editorFontSize,
+  autoSave: initialEditorSettings.autoSave,
+  formatOnSave: initialEditorSettings.formatOnSave,
+  wordWrap: initialEditorSettings.wordWrap,
+  minimapEnabled: initialEditorSettings.minimapEnabled,
+  tabSize: initialEditorSettings.tabSize,
+  gitDiffMode: initialEditorSettings.gitDiffMode,
 
   // Live server initial state
   liveServerActive: false,
@@ -516,6 +655,7 @@ export const useStore = create<EditorState>((set, get) => ({
   gitBusy: false,
   gitError: null,
   problems: [],
+  formatActiveDocument: null,
 
   // Extensions initial state
   installedExtensions: [],
@@ -593,6 +733,138 @@ export const useStore = create<EditorState>((set, get) => ({
       set({ gitBusy: false });
       await get().refreshGitStatus();
     }
+  },
+
+  openGitDiff: async (relPath: string, staged = false) => {
+    const { workspacePath, gitDiffMode, openTabs } = get();
+    if (!workspacePath || !relPath.trim()) return;
+
+    const tabId = `git-diff:${staged ? 'staged' : 'working'}:${relPath}`;
+    const existing = openTabs.find((t) => t.id === tabId);
+    if (existing) {
+      set({ activeTabId: tabId, selectedPath: joinPath(workspacePath, relPath), selectedKind: 'file' });
+      return;
+    }
+
+    try {
+      const versions = await window.electronAPI.git.fileVersions(workspacePath, relPath, staged);
+      const fullPath = joinPath(workspacePath, relPath);
+      const name = relPath.split('/').pop() || relPath;
+      const language = getLanguageFromPath(relPath);
+      const newTab: Tab = {
+        id: tabId,
+        name: `${name} (Git)`,
+        path: fullPath,
+        content: versions.modified,
+        savedContent: versions.modified,
+        language,
+        isUnsaved: false,
+        gitDiff: {
+          relPath,
+          staged,
+          original: versions.original,
+          modified: versions.modified,
+          mode: gitDiffMode,
+        },
+      };
+      set((state) => ({
+        openTabs: [...state.openTabs, newTab],
+        activeTabId: tabId,
+        selectedPath: fullPath,
+        selectedKind: 'file',
+      }));
+    } catch (err) {
+      console.warn('[forge] openGitDiff failed:', (err as Error).message);
+    }
+  },
+
+  openGitCommitDiff: async (relPath: string, entry: GitLogEntry) => {
+    const { workspacePath, gitDiffMode, openTabs } = get();
+    if (!workspacePath || !relPath.trim() || !entry.hash) return;
+
+    const tabId = `git-history:${entry.hash}:${relPath}`;
+    const existing = openTabs.find((t) => t.id === tabId);
+    if (existing) {
+      set({ activeTabId: tabId });
+      return;
+    }
+
+    try {
+      const versions = await window.electronAPI.git.commitFileVersions(
+        workspacePath,
+        relPath,
+        entry.hash,
+      );
+      const fullPath = joinPath(workspacePath, relPath);
+      const name = relPath.split('/').pop() || relPath;
+      const language = getLanguageFromPath(relPath);
+      const newTab: Tab = {
+        id: tabId,
+        name: `${name} (${entry.shortHash})`,
+        path: fullPath,
+        content: versions.modified,
+        savedContent: versions.modified,
+        language,
+        isUnsaved: false,
+        gitDiff: {
+          relPath,
+          staged: false,
+          original: versions.original,
+          modified: versions.modified,
+          mode: gitDiffMode,
+          commitHash: entry.hash,
+          commitLabel: `${entry.shortHash} · ${entry.subject}`,
+        },
+      };
+      set((state) => ({
+        openTabs: [...state.openTabs, newTab],
+        activeTabId: tabId,
+        selectedPath: fullPath,
+        selectedKind: 'file',
+      }));
+    } catch (err) {
+      console.warn('[forge] openGitCommitDiff failed:', (err as Error).message);
+    }
+  },
+
+  setGitDiffMode: (mode: 'inline' | 'side-by-side') => {
+    set((state) => {
+      persistEditorSettings({ ...snapshotEditorSettings(state), gitDiffMode: mode });
+      return {
+        gitDiffMode: mode,
+        openTabs: state.openTabs.map((tab) =>
+          tab.gitDiff ? { ...tab, gitDiff: { ...tab.gitDiff, mode } } : tab,
+        ),
+      };
+    });
+  },
+
+  toggleActiveGitDiffMode: () => {
+    const { activeTabId, openTabs, gitDiffMode } = get();
+    const tab = openTabs.find((t) => t.id === activeTabId);
+    if (!tab?.gitDiff) return;
+    const next = gitDiffMode === 'inline' ? 'side-by-side' : 'inline';
+    get().setGitDiffMode(next);
+  },
+
+  registerFormatActiveDocument: (fn) => {
+    set({ formatActiveDocument: fn });
+  },
+
+  scheduleAutoSave: (tabId: string) => {
+    if (!get().autoSave) return;
+    autoSaveTabId = tabId;
+    if (autoSaveTimer) window.clearTimeout(autoSaveTimer);
+    autoSaveTimer = window.setTimeout(() => {
+      autoSaveTimer = null;
+      const id = autoSaveTabId;
+      autoSaveTabId = null;
+      if (!id) return;
+      const tab = get().openTabs.find((t) => t.id === id);
+      if (tab?.isUnsaved && !tab.gitDiff && !tab.imageDataUrl) {
+        void get().saveFile(id);
+      }
+    }, 1000);
   },
 
   updateProblemsForFile: (filePath: string, problems: Problem[]) => {
@@ -1380,6 +1652,7 @@ export const useStore = create<EditorState>((set, get) => ({
           : t
       ),
     }));
+    get().scheduleAutoSave(tabId);
   },
 
   clearPendingEditorReveal: (id: number) => {
@@ -1396,10 +1669,21 @@ export const useStore = create<EditorState>((set, get) => ({
     if (!id) return;
 
     const tab = state.openTabs.find((t) => t.id === id);
-    if (!tab) return;
+    if (!tab || tab.gitDiff || tab.imageDataUrl) return;
+
+    if (state.formatOnSave && state.formatActiveDocument && id === state.activeTabId) {
+      try {
+        await state.formatActiveDocument();
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    const latest = get().openTabs.find((t) => t.id === id);
+    if (!latest) return;
 
     try {
-      await window.electronAPI.writeFile(tab.path, tab.content);
+      await window.electronAPI.writeFile(latest.path, latest.content);
       set((state) => ({
         openTabs: state.openTabs.map((t) =>
           t.id === id
@@ -1504,62 +1788,175 @@ export const useStore = create<EditorState>((set, get) => ({
     set({ bottomPanelHeight: Math.max(100, Math.round(height)) });
   },
 
-  setActiveTerminalId: (id: string | null) => {
-    const pending = get().pendingTerminalCommand;
-    set({ activeTerminalId: id });
-    if (id && pending && window.electronAPI?.terminalWrite) {
-      set({ pendingTerminalCommand: null });
+  ensureTerminalSession: () => {
+    const { terminalSessions } = get();
+    if (terminalSessions.length > 0) {
+      const active = get().activeTerminalSessionId;
+      if (active && terminalSessions.some((s) => s.id === active)) return active;
+      return terminalSessions[0].id;
+    }
+    const id = `term-${Date.now()}`;
+    const session: TerminalSession = {
+      id,
+      label: 'Terminal 1',
+      ptyId: null,
+      agentId: null,
+      pendingCommand: null,
+    };
+    set({ terminalSessions: [session], activeTerminalSessionId: id });
+    return id;
+  },
+
+  createTerminalSession: (label?: string) => {
+    const count = get().terminalSessions.length;
+    const id = `term-${Date.now()}`;
+    const session: TerminalSession = {
+      id,
+      label: label ?? `Terminal ${count + 1}`,
+      ptyId: null,
+      agentId: null,
+      pendingCommand: null,
+    };
+    set((state) => ({
+      terminalSessions: [...state.terminalSessions, session],
+      activeTerminalSessionId: id,
+      bottomPanelVisible: true,
+      activeBottomTab: 'terminal',
+    }));
+    return id;
+  },
+
+  closeTerminalSession: (sessionId: string) => {
+    const state = get();
+    const session = state.terminalSessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    if (session.ptyId && window.electronAPI?.terminalKill) {
+      try {
+        window.electronAPI.terminalKill(session.ptyId);
+      } catch {
+        /* best-effort */
+      }
+    }
+    const remaining = state.terminalSessions.filter((s) => s.id !== sessionId);
+    let nextActive = state.activeTerminalSessionId;
+    if (nextActive === sessionId) {
+      nextActive = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
+    }
+    set({ terminalSessions: remaining, activeTerminalSessionId: nextActive });
+  },
+
+  setActiveTerminalSession: (sessionId: string) => {
+    set({
+      activeTerminalSessionId: sessionId,
+      bottomPanelVisible: true,
+      activeBottomTab: 'terminal',
+    });
+  },
+
+  registerTerminalPty: (sessionId: string, ptyId: string | null) => {
+    set((state) => ({
+      terminalSessions: state.terminalSessions.map((s) =>
+        s.id === sessionId ? { ...s, ptyId } : s,
+      ),
+    }));
+    const session = get().terminalSessions.find((s) => s.id === sessionId);
+    if (ptyId && session?.pendingCommand && window.electronAPI?.terminalWrite) {
+      const pending = session.pendingCommand;
       window.setTimeout(() => {
         try {
-          window.electronAPI.terminalWrite(id, pending.endsWith('\r') ? pending : `${pending}\r`);
+          window.electronAPI.terminalWrite(
+            ptyId,
+            pending.endsWith('\r') ? pending : `${pending}\r`,
+          );
+          set({
+            terminalSessions: get().terminalSessions.map((s) =>
+              s.id === sessionId ? { ...s, pendingCommand: null } : s,
+            ),
+          });
         } catch (err) {
-          console.debug('[forge] terminalWrite (pending command) failed:', (err as Error)?.message);
+          console.debug('[forge] terminalWrite (pending) failed:', (err as Error)?.message);
         }
       }, 120);
     }
   },
 
+  runCommandInTerminalSession: (sessionId: string, command: string) => {
+    const trimmed = command.trim();
+    if (!trimmed) return;
+    const state = get();
+    const fullCommand = buildTerminalCommand(state.workspacePath, trimmed);
+    const session = state.terminalSessions.find((s) => s.id === sessionId);
+
+    if (session?.ptyId && window.electronAPI?.terminalWrite) {
+      try {
+        window.electronAPI.terminalWrite(session.ptyId, fullCommand);
+        return;
+      } catch (err) {
+        console.debug('[forge] terminalWrite failed:', (err as Error)?.message);
+      }
+    }
+
+    set({
+      terminalSessions: state.terminalSessions.map((s) =>
+        s.id === sessionId ? { ...s, pendingCommand: fullCommand } : s,
+      ),
+    });
+  },
+
   runCommandInTerminal: (command: string) => {
     const trimmed = command.trim();
     if (!trimmed) return;
+    set({ bottomPanelVisible: true, activeBottomTab: 'terminal' });
+    const sessionId = get().activeTerminalSessionId ?? get().ensureTerminalSession();
+    get().setActiveTerminalSession(sessionId);
+    get().runCommandInTerminalSession(sessionId, trimmed);
+  },
+
+  runAgentInTerminal: (agentId: AgentTerminalId) => {
+    const cfg = AGENT_TERMINAL_CONFIG[agentId];
+    const existing = get().terminalSessions.find((s) => s.agentId === agentId);
+    let sessionId: string;
+    let isNew = false;
+
+    if (existing) {
+      sessionId = existing.id;
+    } else {
+      sessionId = `term-agent-${agentId}-${Date.now()}`;
+      const session: TerminalSession = {
+        id: sessionId,
+        label: cfg.label,
+        ptyId: null,
+        agentId,
+        pendingCommand: null,
+      };
+      set((state) => ({
+        terminalSessions: [...state.terminalSessions, session],
+      }));
+      isNew = true;
+    }
+
     set({
+      activeTerminalSessionId: sessionId,
       bottomPanelVisible: true,
       activeBottomTab: 'terminal',
     });
 
-    const state = get();
-    const escapedWorkspace = state.workspacePath?.replace(/"/g, '\\"');
-    const fullCommand = escapedWorkspace
-      ? ` cd "${escapedWorkspace}" && ${trimmed}\r`
-      : ` ${trimmed}\r`;
-
-    if (state.activeTerminalId && window.electronAPI?.terminalWrite) {
-      try {
-        window.electronAPI.terminalWrite(state.activeTerminalId, fullCommand);
-        return;
-      } catch (err) {
-        console.debug('[forge] terminalWrite (run command) failed:', (err as Error)?.message);
-      }
+    if (isNew) {
+      get().runCommandInTerminalSession(sessionId, cfg.command);
     }
-
-    set({ pendingTerminalCommand: fullCommand });
   },
 
   sendCdToActiveTerminal: (workspacePath: string) => {
-    if (!workspacePath) return;
-    const { activeTerminalId } = get();
-    if (!activeTerminalId) return;
-    if (!window.electronAPI?.terminalWrite) return;
-
-    // Quote the path to handle spaces, and rely on `cd` to expand
-    // backslashes correctly on Windows (PowerShell + cmd both accept
-    // quoted paths).
+    if (!workspacePath || !window.electronAPI?.terminalWrite) return;
     const escaped = workspacePath.replace(/"/g, '\\"');
-    const command = ` cd "${escaped}"\r`; // leading space helps bash HISTCONTROL=ignorespace
-    try {
-      window.electronAPI.terminalWrite(activeTerminalId, command);
-    } catch (err) {
-      console.debug('[forge] terminalWrite (cd) failed:', (err as Error)?.message);
+    const command = ` cd "${escaped}"\r`;
+    for (const session of get().terminalSessions) {
+      if (!session.ptyId) continue;
+      try {
+        window.electronAPI.terminalWrite(session.ptyId, command);
+      } catch (err) {
+        console.debug('[forge] terminalWrite (cd) failed:', (err as Error)?.message);
+      }
     }
   },
 
@@ -1572,25 +1969,73 @@ export const useStore = create<EditorState>((set, get) => ({
   },
 
   zoomIn: () => {
-    set((state) => ({
-      editorFontSize: Math.min(
-        MAX_EDITOR_FONT_SIZE,
-        state.editorFontSize + EDITOR_FONT_SIZE_STEP,
-      ),
-    }));
+    set((state) => {
+      const editorFontSize = clampEditorFontSize(state.editorFontSize + EDITOR_FONT_SIZE_STEP);
+      persistEditorSettings({ ...snapshotEditorSettings(state), editorFontSize });
+      return { editorFontSize };
+    });
   },
 
   zoomOut: () => {
-    set((state) => ({
-      editorFontSize: Math.max(
-        MIN_EDITOR_FONT_SIZE,
-        state.editorFontSize - EDITOR_FONT_SIZE_STEP,
-      ),
-    }));
+    set((state) => {
+      const editorFontSize = clampEditorFontSize(state.editorFontSize - EDITOR_FONT_SIZE_STEP);
+      persistEditorSettings({ ...snapshotEditorSettings(state), editorFontSize });
+      return { editorFontSize };
+    });
   },
 
   resetZoom: () => {
-    set({ editorFontSize: DEFAULT_EDITOR_FONT_SIZE });
+    set((state) => {
+      persistEditorSettings({
+        ...snapshotEditorSettings(state),
+        editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
+      });
+      return { editorFontSize: DEFAULT_EDITOR_FONT_SIZE };
+    });
+  },
+
+  setEditorFontSize: (size: number) => {
+    set((state) => {
+      const editorFontSize = clampEditorFontSize(size);
+      persistEditorSettings({ ...snapshotEditorSettings(state), editorFontSize });
+      return { editorFontSize };
+    });
+  },
+
+  setAutoSave: (enabled: boolean) => {
+    set((state) => {
+      persistEditorSettings({ ...snapshotEditorSettings(state), autoSave: enabled });
+      return { autoSave: enabled };
+    });
+  },
+
+  setFormatOnSave: (enabled: boolean) => {
+    set((state) => {
+      persistEditorSettings({ ...snapshotEditorSettings(state), formatOnSave: enabled });
+      return { formatOnSave: enabled };
+    });
+  },
+
+  setWordWrap: (enabled: boolean) => {
+    set((state) => {
+      persistEditorSettings({ ...snapshotEditorSettings(state), wordWrap: enabled });
+      return { wordWrap: enabled };
+    });
+  },
+
+  setMinimapEnabled: (enabled: boolean) => {
+    set((state) => {
+      persistEditorSettings({ ...snapshotEditorSettings(state), minimapEnabled: enabled });
+      return { minimapEnabled: enabled };
+    });
+  },
+
+  setTabSize: (size: number) => {
+    set((state) => {
+      const tabSize = clampTabSize(size);
+      persistEditorSettings({ ...snapshotEditorSettings(state), tabSize });
+      return { tabSize };
+    });
   },
 
   setSelectedPath: (selection: SelectedNode | null) => {

@@ -52,7 +52,7 @@ export default function ExtensionsPanel() {
   const installExtensionById = useStore((s) => s.installExtensionById);
   const uninstallExtension = useStore((s) => s.uninstallExtension);
   const setColorTheme = useStore((s) => s.setColorTheme);
-  const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
+  const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
 
   const [query, setQuery] = useState('');
   const [imageErrors, setImageErrors] = useState<Set<string>>(() => new Set());
@@ -198,7 +198,7 @@ export default function ExtensionsPanel() {
                         {agentCommand ? (
                           <button
                             title={`Run ${agentCommand}`}
-                            onClick={() => runCommandInTerminal(agentCommand)}
+                            onClick={() => runAgentInTerminal(agentCommand as import('../types').AgentTerminalId)}
                             className="w-7 h-6 flex items-center justify-center rounded text-forge-accent bg-forge-accent/10 hover:bg-forge-accent/20 flex-shrink-0"
                           >
                             <Terminal size={13} />

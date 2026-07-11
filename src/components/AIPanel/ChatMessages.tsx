@@ -50,9 +50,9 @@ function LiveWriteView({
       className="flex items-center gap-2 px-2.5 py-1.5 rounded text-[12px] border border-forge-accent/40"
       style={{
         background: done
-          ? 'rgba(74, 219, 148, 0.06)'
-          : 'rgba(74, 219, 148, 0.10)',
-        color: done ? '#A8E4C5' : '#C8F0DD',
+          ? 'rgba(182, 90, 72, 0.06)'
+          : 'rgba(182, 90, 72, 0.10)',
+        color: done ? '#E7B9AF' : '#FFE1D8',
       }}
     >
       <span className="flex-shrink-0 inline-flex">
@@ -94,7 +94,7 @@ function ToolCallView({ tool }: { tool: AIToolCall }) {
     statusText = `Error en ${tool.name}: ${tool.error}`;
   } else {
     icon = <Check size={13} className="text-forge-accent" />;
-    bg = 'rgba(74, 219, 148, 0.06)';
+    bg = 'rgba(182, 90, 72, 0.06)';
     if (tool.name === 'escribir_archivo') {
       const path = tool.paths?.[0] || tool.args.ruta;
       statusText = `Archivo afectado: ${relativize(workspacePath, path)}`;
@@ -141,7 +141,7 @@ function MessageBubble({ message }: { message: AIMessage }) {
         </div>
         <div
           className="max-w-[90%] px-3 py-2 rounded-md text-[13px] text-forge-text-strong border border-forge-border"
-          style={{ background: 'rgba(74, 219, 148, 0.08)' }}
+          style={{ background: 'rgba(182, 90, 72, 0.08)' }}
         >
           <p className="whitespace-pre-wrap break-words leading-relaxed">
             {message.content}

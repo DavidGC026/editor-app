@@ -1,5 +1,5 @@
 import { useStore } from '../store';
-import { Bell, GitBranch, AlertCircle, CheckCircle2, Globe } from 'lucide-react';
+import { Bell, GitBranch, AlertCircle, CheckCircle2, Globe, Save } from 'lucide-react';
 
 export default function StatusBar() {
   const cursorPosition = useStore((s) => s.cursorPosition);
@@ -16,6 +16,9 @@ export default function StatusBar() {
   const gitChanges = useStore((s) => s.gitChanges);
   const setSidebarPanel = useStore((s) => s.setSidebarPanel);
   const problems = useStore((s) => s.problems);
+  const autoSave = useStore((s) => s.autoSave);
+  const setAutoSave = useStore((s) => s.setAutoSave);
+  const tabSize = useStore((s) => s.tabSize);
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const languageLabel = activeTab?.language || 'Plain Text';
@@ -23,7 +26,7 @@ export default function StatusBar() {
 
   const showPort = liveServerActive && liveServerPort != null;
   const liveServerLabel = showPort ? `Puerto: ${liveServerPort}` : 'Live Server';
-  const liveServerColor = liveServerActive ? '#4ADB94' : '#A1A3AF';
+  const liveServerColor = liveServerActive ? '#B65A48' : '#A1A3AF';
   const liveServerTitle = liveServerActive
     ? `Live Server activo en ${liveServerUrl || `http://localhost:${liveServerPort}`} — clic para detener`
     : 'Live Server inactivo — clic para iniciar (requiere archivo HTML)';
@@ -81,12 +84,23 @@ export default function StatusBar() {
 
       {/* Right */}
       <div className="flex items-center gap-4">
+        <button
+          onClick={() => setAutoSave(!autoSave)}
+          title={autoSave ? 'Auto Save activo — clic para desactivar' : 'Auto Save inactivo — clic para activar'}
+          className={`flex items-center gap-1 px-1 rounded transition-colors hover:text-forge-text-strong ${
+            autoSave ? 'text-forge-accent' : ''
+          }`}
+        >
+          <Save size={12} />
+          <span>{autoSave ? 'Auto Save' : 'Manual Save'}</span>
+        </button>
+
         {activeTab && (
           <>
             <span>
               Ln {cursorPosition.line}, Col {cursorPosition.column}
             </span>
-            <span>Spaces: 2</span>
+            <span>Spaces: {tabSize}</span>
             <span>UTF-8</span>
             <span>LF</span>
             <span>{displayLanguage}</span>

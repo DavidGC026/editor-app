@@ -1,12 +1,33 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import Editor, { OnMount, BeforeMount } from '@monaco-editor/react';
 import { useStore } from '../store';
-import { X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Bot,
+  Boxes,
+  CheckCircle2,
+  ChevronRight,
+  Command,
+  FileCode2,
+  Files,
+  FolderOpen,
+  GitBranch,
+  Globe,
+  Play,
+  Save,
+  Search,
+  Sparkles,
+  TerminalSquare,
+  type LucideIcon,
+  X,
+} from 'lucide-react';
 import type { editor } from 'monaco-editor';
 import logoUrl from '../assets/forge-logo.png';
 import { lspClient, getLspLanguageId } from '../lsp/client';
 import { attachMonaco as attachExtensionMonaco, isThemeAvailable } from '../extensions/registry';
 import ImageViewer from './ImageViewer';
+import GitDiffEditor from './GitDiffEditor';
+import type { TreeNode } from '../types';
 
 function toFileUri(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');
@@ -15,44 +36,350 @@ function toFileUri(filePath: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Welcome Screen
+// Workbench home / editor chrome
 // ─────────────────────────────────────────────────────────────────────────
-function WelcomeScreen() {
+
+function flattenFiles(nodes: TreeNode[]): TreeNode[] {
+  const out: TreeNode[] = [];
+  const walk = (items: TreeNode[]) => {
+    for (const item of items) {
+      if (item.type === 'file') out.push(item);
+      if (item.children) walk(item.children);
+    }
+  };
+  walk(nodes);
+  return out;
+}
+
+function relativePath(workspacePath: string | null, filePath: string): string {
+  if (!workspacePath) return filePath;
+  const normalizedWorkspace = workspacePath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalizedFile = filePath.replace(/\\/g, '/');
+  if (!normalizedFile.startsWith(`${normalizedWorkspace}/`)) return filePath;
+  return normalizedFile.slice(normalizedWorkspace.length + 1);
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
+function WorkspaceHome() {
   const openFolder = useStore((s) => s.openFolder);
+  const workspacePath = useStore((s) => s.workspacePath);
+  const workspaceName = useStore((s) => s.workspaceName);
+  const fileTree = useStore((s) => s.fileTree);
+  const openFile = useStore((s) => s.openFile);
+  const setQuickOpenOpen = useStore((s) => s.setQuickOpenOpen);
+  const setCommandPaletteOpen = useStore((s) => s.setCommandPaletteOpen);
+  const setSidebarPanel = useStore((s) => s.setSidebarPanel);
+  const setBottomTab = useStore((s) => s.setBottomTab);
+  const toggleAIPanel = useStore((s) => s.toggleAIPanel);
+  const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
+  const gitIsRepo = useStore((s) => s.gitIsRepo);
+  const gitBranch = useStore((s) => s.gitBranch);
+  const gitChanges = useStore((s) => s.gitChanges);
+  const problems = useStore((s) => s.problems);
+  const installedExtensions = useStore((s) => s.installedExtensions);
+  const liveServerActive = useStore((s) => s.liveServerActive);
+
+  const files = useMemo(() => flattenFiles(fileTree), [fileTree]);
+  const folders = useMemo(() => {
+    let count = 0;
+    const walk = (items: TreeNode[]) => {
+      for (const item of items) {
+        if (item.type === 'directory') count += 1;
+        if (item.children) walk(item.children);
+      }
+    };
+    walk(fileTree);
+    return count;
+  }, [fileTree]);
+
+  const recentFiles = files
+    .filter((file) => !file.path.includes('/node_modules/') && !file.path.includes('\\node_modules\\'))
+    .slice(0, 7);
+  const hasPackageJson = files.some((file) => file.name === 'package.json');
+  const errorCount = problems.filter((p) => p.severity === 1).length;
+  const warningCount = problems.filter((p) => p.severity === 2).length;
+
+  const primaryActions = [
+    {
+      label: 'Quick Open',
+      icon: Search,
+      action: () => setQuickOpenOpen(true),
+      disabled: !workspacePath,
+    },
+    {
+      label: 'Command Palette',
+      icon: Command,
+      action: () => setCommandPaletteOpen(true),
+      disabled: false,
+    },
+    {
+      label: 'Source Control',
+      icon: GitBranch,
+      action: () => setSidebarPanel('git'),
+      disabled: !workspacePath,
+    },
+    {
+      label: 'Run & Debug',
+      icon: Play,
+      action: () => setSidebarPanel('debug'),
+      disabled: !workspacePath,
+    },
+    {
+      label: 'Terminal',
+      icon: TerminalSquare,
+      action: () => setBottomTab('terminal'),
+      disabled: false,
+    },
+    {
+      label: 'AI Panel',
+      icon: Bot,
+      action: () => toggleAIPanel(),
+      disabled: false,
+    },
+  ];
 
   return (
-    <div className="w-full h-full flex flex-col items-center justify-center bg-forge-editor gap-6 select-none">
-      <img src={logoUrl} alt="Forge" className="w-[88px] h-[88px] object-contain opacity-60" />
-      <h1 className="text-3xl font-light text-forge-text-strong/70 tracking-wide">Forge</h1>
-      <div className="flex flex-col items-center gap-3 text-sm">
-        <p className="text-forge-text/50">Start</p>
-        <button
-          onClick={() => openFolder()}
-          className="text-forge-accent hover:underline cursor-pointer"
-        >
-          Open Folder...
+    <div className="forge-home w-full h-full overflow-auto sidebar-scroll select-none">
+      <div className="min-h-full max-w-[1180px] mx-auto px-8 py-8 flex flex-col gap-7">
+        <section className="forge-home-hero">
+          <div className="min-w-0">
+            <div className="flex items-center gap-3 mb-5">
+              <img src={logoUrl} alt="Forge" className="w-10 h-10 object-contain" />
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.24em] text-forge-accent/80">
+                  Forge Workbench
+                </p>
+                <h1 className="text-[34px] leading-tight font-semibold text-forge-text-strong">
+                  {workspaceName || 'Code without ceremony'}
+                </h1>
+              </div>
+            </div>
+            <p className="max-w-[760px] text-[14px] leading-6 text-forge-text/72">
+              {workspacePath
+                ? workspacePath
+                : 'Open a workspace to start building with Git, terminal, LSP diagnostics, marketplace themes and integrated agents in one focused surface.'}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => openFolder()}
+              className="forge-primary-button"
+            >
+              <FolderOpen size={16} />
+              Open Folder
+            </button>
+            {hasPackageJson && (
+              <button
+                onClick={() => runCommandInTerminal('pnpm dev')}
+                className="forge-secondary-button"
+              >
+                <Play size={15} />
+                pnpm dev
+              </button>
+            )}
+          </div>
+        </section>
+
+        <section className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          <MetricTile icon={Files} label="Files" value={formatNumber(files.length)} />
+          <MetricTile icon={Boxes} label="Folders" value={formatNumber(folders)} />
+          <MetricTile
+            icon={GitBranch}
+            label={gitIsRepo ? gitBranch || 'Git' : 'Git'}
+            value={gitIsRepo ? `${gitChanges.length} changes` : 'No repo'}
+            tone={gitChanges.length > 0 ? 'warn' : 'ok'}
+          />
+          <MetricTile
+            icon={errorCount > 0 ? AlertTriangle : CheckCircle2}
+            label="Problems"
+            value={`${errorCount} errors · ${warningCount} warnings`}
+            tone={errorCount > 0 ? 'danger' : warningCount > 0 ? 'warn' : 'ok'}
+          />
+        </section>
+
+        <section className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-4 min-h-0">
+          <div className="forge-panel">
+            <div className="forge-panel-header">
+              <div>
+                <h2>Project</h2>
+                <p>{workspaceName ? 'Workspace files' : 'No workspace open'}</p>
+              </div>
+              <button
+                onClick={() => setQuickOpenOpen(true)}
+                disabled={!workspacePath}
+                className="forge-icon-text-button"
+              >
+                <Search size={14} />
+                Find
+              </button>
+            </div>
+
+            {workspacePath ? (
+              <div className="divide-y divide-white/[0.06]">
+                {recentFiles.length > 0 ? (
+                  recentFiles.map((file) => (
+                    <button
+                      key={file.path}
+                      onClick={() => void openFile(file)}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.04] transition-colors"
+                    >
+                      <FileCode2 size={16} className="text-forge-accent/85 flex-shrink-0" />
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-forge-text">
+                        {relativePath(workspacePath, file.path)}
+                      </span>
+                      <ChevronRight size={14} className="text-forge-text/32" />
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-4 py-8 text-sm text-forge-text/58">No files found.</div>
+                )}
+              </div>
+            ) : (
+              <div className="px-4 py-8 flex flex-col gap-3">
+                <button onClick={() => openFolder()} className="forge-wide-action">
+                  <FolderOpen size={16} />
+                  Open workspace
+                </button>
+                <button onClick={() => setCommandPaletteOpen(true)} className="forge-wide-action">
+                  <Command size={16} />
+                  Command palette
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="forge-panel">
+            <div className="forge-panel-header">
+              <div>
+                <h2>Control Center</h2>
+                <p>{liveServerActive ? 'Live server running' : `${installedExtensions.length} extensions installed`}</p>
+              </div>
+              <Sparkles size={17} className="text-forge-accent" />
+            </div>
+            <div className="grid grid-cols-2 gap-2 p-3">
+              {primaryActions.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.label}
+                    onClick={item.action}
+                    disabled={item.disabled}
+                    className="forge-command-tile"
+                  >
+                    <Icon size={17} />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function MetricTile({
+  icon: Icon,
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  tone?: 'neutral' | 'ok' | 'warn' | 'danger';
+}) {
+  const toneClass = {
+    neutral: 'text-[#9DB5FF]',
+    ok: 'text-forge-accent',
+    warn: 'text-[#F3C969]',
+    danger: 'text-[#FF6B6B]',
+  }[tone];
+
+  return (
+    <div className="forge-metric-tile">
+      <Icon size={18} className={toneClass} />
+      <div className="min-w-0">
+        <p className="truncate">{label}</p>
+        <strong className="truncate">{value}</strong>
+      </div>
+    </div>
+  );
+}
+
+function EditorToolbar() {
+  const openTabs = useStore((s) => s.openTabs);
+  const activeTabId = useStore((s) => s.activeTabId);
+  const workspacePath = useStore((s) => s.workspacePath);
+  const saveFile = useStore((s) => s.saveFile);
+  const setCommandPaletteOpen = useStore((s) => s.setCommandPaletteOpen);
+  const setBottomTab = useStore((s) => s.setBottomTab);
+  const toggleLiveServer = useStore((s) => s.toggleLiveServer);
+  const problems = useStore((s) => s.problems);
+
+  const activeTab = openTabs.find((t) => t.id === activeTabId);
+  if (!activeTab || activeTab.gitDiff) return null;
+
+  const rel = relativePath(workspacePath, activeTab.path);
+  const crumbs = rel.split('/').filter(Boolean);
+  const fileProblems = problems.filter((p) => p.filePath === activeTab.path);
+  const errorCount = fileProblems.filter((p) => p.severity === 1).length;
+  const warningCount = fileProblems.filter((p) => p.severity === 2).length;
+
+  return (
+    <div className="h-[34px] bg-forge-editor/95 border-b border-forge-border/70 flex items-center justify-between px-3 select-none">
+      <div className="min-w-0 flex items-center gap-1 text-[12px] text-forge-text/60">
+        {crumbs.map((crumb, index) => {
+          const isLast = index === crumbs.length - 1;
+          return (
+            <span key={`${crumb}-${index}`} className="flex items-center min-w-0">
+              <span className={`truncate max-w-[180px] ${isLast ? 'text-forge-text font-medium' : ''}`}>
+                {crumb}
+              </span>
+              {!isLast && <ChevronRight size={13} className="mx-1 text-forge-text/28 flex-shrink-0" />}
+            </span>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        <span className="hidden lg:flex items-center gap-1.5 text-[11px] text-forge-text/54 mr-2">
+          {activeTab.isUnsaved ? 'Unsaved' : 'Saved'}
+          <span className="w-1 h-1 rounded-full bg-forge-text/30" />
+          {activeTab.language}
+          {fileProblems.length > 0 && (
+            <>
+              <span className="w-1 h-1 rounded-full bg-forge-text/30" />
+              <span className={errorCount > 0 ? 'text-[#FF6B6B]' : 'text-[#F3C969]'}>
+                {errorCount}E {warningCount}W
+              </span>
+            </>
+          )}
+        </span>
+        <button className="forge-toolbar-button" title="Save" onClick={() => void saveFile(activeTab.id)}>
+          <Save size={14} />
         </button>
-        <div className="flex flex-col items-center gap-1 mt-4 text-forge-text/40 text-xs">
-          <p>
-            <kbd className="px-1.5 py-0.5 bg-forge-input rounded text-forge-text/70">Ctrl+Shift+P</kbd>{' '}
-            Command Palette
-          </p>
-          <p>
-            <kbd className="px-1.5 py-0.5 bg-forge-input rounded text-forge-text/70">Ctrl+B</kbd>{' '}
-            Toggle Sidebar
-          </p>
-          <p>
-            <kbd className="px-1.5 py-0.5 bg-forge-input rounded text-forge-text/70">Ctrl+`</kbd>{' '}
-            Toggle Terminal
-          </p>
-        </div>
+        <button className="forge-toolbar-button" title="Live Server" onClick={() => void toggleLiveServer(activeTab.path)}>
+          <Globe size={14} />
+        </button>
+        <button className="forge-toolbar-button" title="Terminal" onClick={() => setBottomTab('terminal')}>
+          <TerminalSquare size={14} />
+        </button>
+        <button className="forge-toolbar-button" title="Command Palette" onClick={() => setCommandPaletteOpen(true)}>
+          <Command size={14} />
+        </button>
       </div>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Tab Bar — no icons; active text #4ADB94
+// Tab Bar — no icons; active text uses the brick accent
 // ─────────────────────────────────────────────────────────────────────────
 function TabBar() {
   const openTabs = useStore((s) => s.openTabs);
@@ -76,13 +403,16 @@ function TabBar() {
                 : 'bg-forge-tabbar hover:bg-white/[0.03]'}
             `}
           >
-            {tab.isUnsaved && (
+            {tab.isUnsaved && !tab.gitDiff && (
               <div className="w-[7px] h-[7px] rounded-full bg-forge-text/70 flex-shrink-0" />
+            )}
+            {tab.gitDiff && (
+              <GitBranch size={12} className="text-forge-accent flex-shrink-0" />
             )}
 
             <span
               className="truncate text-[13px]"
-              style={{ color: isActive ? '#4ADB94' : '#96969D' }}
+              style={{ color: isActive ? '#B65A48' : '#96969D' }}
             >
               {tab.name}
             </span>
@@ -110,13 +440,14 @@ function TabBar() {
 // Custom Monaco Theme — "forge-dark"
 // ─────────────────────────────────────────────────────────────────────────
 function defineForgeTheme(monaco: typeof import('monaco-editor')) {
-  // Forge-dark theme — red-dominated palette.
+  // Forge-dark theme — brick-red primary palette.
   // Color reference:
-  //   Red      #E06C75 — strings / attribute values / properties
-  //   Bright   #FF6B6B — keywords / HTML tags / control flow
+  //   Brick    #B65A48 — primary accent / cursor / active editor chrome
+  //   Clay     #D06A55 — keywords / HTML tags / control flow
+  //   Rose     #C98575 — strings / attribute values / properties
   //   Light    #ABB2BF — variables / identifiers / default text
   //   Gray     #5C6370 — comments
-  //   Green    #4ADB94 — functions / methods (accent contrast)
+  //   Teal     #73C6B6 — functions / methods (cool contrast)
   //   Orange   #D19A66 — numbers / constants
   //   Yellow-2 #E5C07B — types / classes (warm contrast)
   //   White    #D0D3DA — operators / punctuation / delimiters
@@ -125,7 +456,7 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
     inherit: true,
     rules: [
       // Default text
-      { token: '', foreground: 'ABB2BF', background: '2D2F38' },
+      { token: '', foreground: 'ABB2BF', background: '2B2D35' },
 
       // Comments — gray (kept neutral for contrast)
       { token: 'comment', foreground: '5C6370', fontStyle: 'italic' },
@@ -133,44 +464,44 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       { token: 'comment.block', foreground: '5C6370', fontStyle: 'italic' },
       { token: 'comment.line', foreground: '5C6370', fontStyle: 'italic' },
 
-      // Keywords — bright red (control flow, declarations)
-      { token: 'keyword', foreground: 'FF6B6B' },
-      { token: 'keyword.control', foreground: 'FF6B6B' },
+      // Keywords — clay red (control flow, declarations)
+      { token: 'keyword', foreground: 'D06A55' },
+      { token: 'keyword.control', foreground: 'D06A55' },
       { token: 'keyword.operator', foreground: 'D0D3DA' },
-      { token: 'storage', foreground: 'FF6B6B' },
-      { token: 'storage.type', foreground: 'FF6B6B' },
-      { token: 'storage.modifier', foreground: 'FF6B6B' },
+      { token: 'storage', foreground: 'D06A55' },
+      { token: 'storage.type', foreground: 'D06A55' },
+      { token: 'storage.modifier', foreground: 'D06A55' },
 
-      // HTML / XML / template tags — bright red
-      { token: 'tag', foreground: 'FF6B6B' },
-      { token: 'tag.html', foreground: 'FF6B6B' },
-      { token: 'tag.xml', foreground: 'FF6B6B' },
-      { token: 'metatag', foreground: 'FF6B6B' },
-      { token: 'metatag.content.html', foreground: 'FF6B6B' },
-      { token: 'metatag.html', foreground: 'FF6B6B' },
-      { token: 'metatag.xml', foreground: 'FF6B6B' },
+      // HTML / XML / template tags — clay red
+      { token: 'tag', foreground: 'D06A55' },
+      { token: 'tag.html', foreground: 'D06A55' },
+      { token: 'tag.xml', foreground: 'D06A55' },
+      { token: 'metatag', foreground: 'D06A55' },
+      { token: 'metatag.content.html', foreground: 'D06A55' },
+      { token: 'metatag.html', foreground: 'D06A55' },
+      { token: 'metatag.xml', foreground: 'D06A55' },
 
-      // Attributes / properties / keys — softer red
-      { token: 'attribute.name', foreground: 'E06C75' },
-      { token: 'attribute.name.html', foreground: 'E06C75' },
-      { token: 'tag.attribute.name', foreground: 'E06C75' },
-      { token: 'attribute.name.css', foreground: 'E06C75' },
-      { token: 'property', foreground: 'E06C75' },
-      { token: 'property.json', foreground: 'E06C75' },
-      { token: 'key', foreground: 'E06C75' },
-      { token: 'key.json', foreground: 'E06C75' },
+      // Attributes / properties / keys — softer rose brick
+      { token: 'attribute.name', foreground: 'C98575' },
+      { token: 'attribute.name.html', foreground: 'C98575' },
+      { token: 'tag.attribute.name', foreground: 'C98575' },
+      { token: 'attribute.name.css', foreground: 'C98575' },
+      { token: 'property', foreground: 'C98575' },
+      { token: 'property.json', foreground: 'C98575' },
+      { token: 'key', foreground: 'C98575' },
+      { token: 'key.json', foreground: 'C98575' },
 
-      // Strings / attribute values — softer red
-      { token: 'string', foreground: 'E06C75' },
-      { token: 'string.html', foreground: 'E06C75' },
-      { token: 'string.value', foreground: 'E06C75' },
-      { token: 'string.quote', foreground: 'E06C75' },
-      { token: 'string.escape', foreground: 'E06C75' },
-      { token: 'attribute.value', foreground: 'E06C75' },
-      { token: 'attribute.value.html', foreground: 'E06C75' },
-      { token: 'attribute.value.xml', foreground: 'E06C75' },
-      { token: 'string.value.json', foreground: 'E06C75' },
-      { token: 'regexp', foreground: 'E06C75' },
+      // Strings / attribute values — softer rose brick
+      { token: 'string', foreground: 'C98575' },
+      { token: 'string.html', foreground: 'C98575' },
+      { token: 'string.value', foreground: 'C98575' },
+      { token: 'string.quote', foreground: 'C98575' },
+      { token: 'string.escape', foreground: 'C98575' },
+      { token: 'attribute.value', foreground: 'C98575' },
+      { token: 'attribute.value.html', foreground: 'C98575' },
+      { token: 'attribute.value.xml', foreground: 'C98575' },
+      { token: 'string.value.json', foreground: 'C98575' },
+      { token: 'regexp', foreground: 'C98575' },
 
       // Template / delimiters — neutral white (so red tokens pop)
       // (covers Liquid/Jinja {% %} {{ }} as well as generic delimiters)
@@ -182,10 +513,10 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       { token: 'delimiter.square', foreground: 'D0D3DA' },
       { token: 'delimiter.curly', foreground: 'D0D3DA' },
       { token: 'delimiter.angle', foreground: 'D0D3DA' },
-      { token: 'delimiter.template', foreground: 'FF6B6B' },
-      { token: 'meta.tag.template', foreground: 'FF6B6B' },
-      { token: 'string.template', foreground: 'E06C75' },
-      { token: 'punctuation.definition.template', foreground: 'FF6B6B' },
+      { token: 'delimiter.template', foreground: 'D06A55' },
+      { token: 'meta.tag.template', foreground: 'D06A55' },
+      { token: 'string.template', foreground: 'C98575' },
+      { token: 'punctuation.definition.template', foreground: 'D06A55' },
 
       // Variables / identifiers — light (keep readable for contrast)
       { token: 'identifier', foreground: 'ABB2BF' },
@@ -194,11 +525,11 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       { token: 'variable.other', foreground: 'ABB2BF' },
       { token: 'variable.predefined', foreground: 'ABB2BF' },
 
-      // Functions / methods — green (accent contrast against red)
-      { token: 'function', foreground: '4ADB94' },
-      { token: 'support.function', foreground: '4ADB94' },
-      { token: 'entity.name.function', foreground: '4ADB94' },
-      { token: 'method', foreground: '4ADB94' },
+      // Functions / methods — cool contrast against the brick palette
+      { token: 'function', foreground: '73C6B6' },
+      { token: 'support.function', foreground: '73C6B6' },
+      { token: 'entity.name.function', foreground: '73C6B6' },
+      { token: 'method', foreground: '73C6B6' },
 
       // Numbers — orange (warm contrast)
       { token: 'number', foreground: 'D19A66' },
@@ -223,7 +554,7 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       { token: 'operator.sql', foreground: 'D0D3DA' },
 
       // CSS-specific
-      { token: 'attribute.value.css', foreground: 'E06C75' },
+      { token: 'attribute.value.css', foreground: 'C98575' },
       { token: 'attribute.value.unit.css', foreground: 'D19A66' },
       { token: 'attribute.value.number.css', foreground: 'D19A66' },
       { token: 'attribute.value.hex.css', foreground: 'D19A66' },
@@ -237,23 +568,23 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
     ],
     colors: {
       // Editor surface
-      'editor.background': '#2D2F38',
+      'editor.background': '#2B2D35',
       'editor.foreground': '#ABB2BF',
 
       // Cursor & selection
-      'editorCursor.foreground': '#4ADB94',
+      'editorCursor.foreground': '#B65A48',
       'editor.selectionBackground': '#3E4451',
       'editor.inactiveSelectionBackground': '#3E445199',
       'editor.selectionHighlightBackground': '#3E445166',
       'editor.wordHighlightBackground': '#3E445166',
       'editor.wordHighlightStrongBackground': '#3E445188',
-      'editor.findMatchBackground': '#4ADB9444',
-      'editor.findMatchHighlightBackground': '#4ADB9422',
+      'editor.findMatchBackground': '#B65A4844',
+      'editor.findMatchHighlightBackground': '#B65A4822',
 
       // Line numbers / gutter
       'editorLineNumber.foreground': '#636D83',
       'editorLineNumber.activeForeground': '#ABB2BF',
-      'editorGutter.background': '#2D2F38',
+      'editorGutter.background': '#2B2D35',
 
       // Current line
       'editor.lineHighlightBackground': '#FFFFFF08',
@@ -262,11 +593,11 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       // Whitespace / indent guides
       'editorWhitespace.foreground': '#3A3F4B',
       'editorIndentGuide.background': '#3A3F4B',
-      'editorIndentGuide.activeBackground': '#4ADB9466',
+      'editorIndentGuide.activeBackground': '#B65A4866',
 
       // Bracket matching
-      'editorBracketMatch.background': '#4ADB9422',
-      'editorBracketMatch.border': '#4ADB9488',
+      'editorBracketMatch.background': '#B65A4822',
+      'editorBracketMatch.border': '#B65A4888',
 
       // Widgets
       'editorWidget.background': '#24282E',
@@ -274,7 +605,7 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       'editorSuggestWidget.background': '#24282E',
       'editorSuggestWidget.border': '#3A3F4B',
       'editorSuggestWidget.selectedBackground': '#3E4451',
-      'editorSuggestWidget.highlightForeground': '#4ADB94',
+      'editorSuggestWidget.highlightForeground': '#B65A48',
       'editorHoverWidget.background': '#24282E',
       'editorHoverWidget.border': '#3A3F4B',
 
@@ -284,8 +615,8 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       'scrollbarSlider.activeBackground': '#FFFFFF33',
 
       // Minimap / overview
-      'minimap.background': '#2D2F38',
-      'editorOverviewRuler.border': '#2D2F38',
+      'minimap.background': '#2B2D35',
+      'editorOverviewRuler.border': '#2B2D35',
     },
   });
 }
@@ -300,6 +631,10 @@ function MonacoWrapper() {
   const setCursorPosition = useStore((s) => s.setCursorPosition);
   const editorFontSize = useStore((s) => s.editorFontSize);
   const activeTheme = useStore((s) => s.activeTheme);
+  const wordWrap = useStore((s) => s.wordWrap);
+  const minimapEnabled = useStore((s) => s.minimapEnabled);
+  const tabSize = useStore((s) => s.tabSize);
+  const registerFormatActiveDocument = useStore((s) => s.registerFormatActiveDocument);
   const pendingEditorReveal = useStore((s) => s.pendingEditorReveal);
   const clearPendingEditorReveal = useStore((s) => s.clearPendingEditorReveal);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
@@ -362,6 +697,11 @@ function MonacoWrapper() {
     editorRef.current = editor;
     editor.focus();
 
+    registerFormatActiveDocument(async () => {
+      const action = editor.getAction('editor.action.formatDocument');
+      if (action) await action.run();
+    });
+
     editor.onDidChangeCursorPosition((e) => {
       setCursorPosition({
         line: e.position.lineNumber,
@@ -396,11 +736,23 @@ function MonacoWrapper() {
         },
       });
     });
-  }, [setCursorPosition]);
+  }, [setCursorPosition, registerFormatActiveDocument]);
+
+  useEffect(() => {
+    return () => registerFormatActiveDocument(null);
+  }, [registerFormatActiveDocument]);
 
   useEffect(() => {
     editorRef.current?.updateOptions({ fontSize: editorFontSize });
   }, [editorFontSize]);
+
+  useEffect(() => {
+    editorRef.current?.updateOptions({
+      wordWrap: wordWrap ? 'on' : 'off',
+      minimap: { enabled: minimapEnabled },
+      tabSize,
+    });
+  }, [wordWrap, minimapEnabled, tabSize]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -483,7 +835,11 @@ function MonacoWrapper() {
     }
   }, [openTabs]);
 
-  if (!activeTab) return <WelcomeScreen />;
+  if (!activeTab) return <WorkspaceHome />;
+
+  if (activeTab.gitDiff) {
+    return <GitDiffEditor tab={activeTab} />;
+  }
 
   // Image tabs are rendered as a non-editable preview instead of being
   // forced through Monaco (which would otherwise show garbled binary text
@@ -516,19 +872,19 @@ function MonacoWrapper() {
           fontSize: editorFontSize,
           fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, 'Courier New', monospace",
           fontLigatures: true,
-          minimap: { enabled: true },
+          minimap: { enabled: minimapEnabled },
           scrollBeyondLastLine: false,
           smoothScrolling: true,
           cursorBlinking: 'smooth',
           cursorSmoothCaretAnimation: 'on',
           renderLineHighlight: 'all',
-          wordWrap: 'off',
+          wordWrap: wordWrap ? 'on' : 'off',
           lineNumbers: 'on',
           glyphMargin: false,
           folding: true,
           bracketPairColorization: { enabled: true },
           automaticLayout: true,
-          tabSize: 2,
+          tabSize,
           padding: { top: 8 },
           suggest: {
             showWords: true,
@@ -547,6 +903,7 @@ export default function EditorArea() {
   return (
     <div className="w-full h-full flex flex-col bg-forge-editor">
       <TabBar />
+      <EditorToolbar />
       <div className="flex-1 overflow-hidden">
         <MonacoWrapper />
       </div>

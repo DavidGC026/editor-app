@@ -21,6 +21,18 @@ export interface Tab {
   imageDataUrl?: string;
   /** File size in bytes — displayed in the image-viewer info bar. */
   fileSize?: number;
+  /** When set, the tab renders a read-only Git diff instead of the editor. */
+  gitDiff?: {
+    relPath: string;
+    staged: boolean;
+    original: string;
+    modified: string;
+    /** inline = unified diff editor; side-by-side = split view. */
+    mode: 'inline' | 'side-by-side';
+    /** Historical diff from Timeline (commit vs parent). */
+    commitHash?: string;
+    commitLabel?: string;
+  };
 }
 
 // ── Image file detection ───────────────────────────────────────────────
@@ -51,10 +63,23 @@ export function isHtmlFile(filePath: string): boolean {
 }
 
 // ── Sidebar Panel Types ────────────────────────────────────────────────
-export type SidebarPanel = 'explorer' | 'search' | 'git' | 'debug' | 'extensions';
+export type SidebarPanel = 'explorer' | 'search' | 'git' | 'debug' | 'extensions' | 'settings';
 
 // ── Bottom Panel Tab Types ─────────────────────────────────────────────
 export type BottomTab = 'terminal' | 'problems' | 'output' | 'debug';
+
+/** Dedicated agent CLI terminals (Codex, Claude Code, Cursor Agent). */
+export type AgentTerminalId = 'codex' | 'claude' | 'cursor-agent';
+
+export interface TerminalSession {
+  /** Client-side session id (stable across pty restarts). */
+  id: string;
+  label: string;
+  ptyId: string | null;
+  agentId: AgentTerminalId | null;
+  /** Queued until the pty for this session mounts. */
+  pendingCommand: string | null;
+}
 
 // ── Cursor Position ────────────────────────────────────────────────────
 export interface CursorPosition {
@@ -66,6 +91,10 @@ export interface CursorPosition {
 export interface Command {
   id: string;
   label: string;
+  /** Category shown as group header (File, View, Git, …). */
+  category?: string;
+  /** Extra terms for fuzzy search. */
+  keywords?: string[];
   shortcut?: string;
   action: () => void;
 }
@@ -229,6 +258,32 @@ export interface PendingDiff {
   relPath: string;
 }
 
+export interface GitFileVersions {
+  original: string;
+  modified: string;
+}
+
+export interface ReplaceLinePreview {
+  line: number;
+  before: string;
+  after: string;
+}
+
+export interface ReplaceFilePreview {
+  path: string;
+  count: number;
+  previews: ReplaceLinePreview[];
+}
+
+export interface ReplacePreviewResult {
+  search: string;
+  replace: string;
+  changes: ReplaceFilePreview[];
+  filesChanged: number;
+  totalReplacements: number;
+  applied: boolean;
+}
+
 // ── Git (Source Control) ────────────────────────────────────────────────
 
 export interface GitChange {
@@ -244,6 +299,14 @@ export interface GitStatusPayload {
   isRepo: boolean;
   branch: string | null;
   changes: GitChange[];
+}
+
+export interface GitLogEntry {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  subject: string;
 }
 
 // ── Extensions (VSIX: themes + snippets) ───────────────────────────────
@@ -359,6 +422,15 @@ export interface ElectronAPI {
   minimize: () => void;
   maximize: () => void;
   close: () => void;
+  // Native edit commands
+  edit: {
+    undo: () => void;
+    redo: () => void;
+    cut: () => void;
+    copy: () => void;
+    paste: () => void;
+    selectAll: () => void;
+  };
   // Terminal
   terminalCreate: (opts: { cwd?: string; cols?: number; rows?: number }) => Promise<{ id: string }>;
   terminalWrite: (id: string, data: string) => void;
@@ -452,6 +524,18 @@ export interface ElectronAPI {
     unstage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
     /** Commits staged changes. Resolves with git's stdout summary. */
     commit: (workspacePath: string, message: string) => Promise<string>;
+    diff: (workspacePath: string, relPath: string, staged?: boolean) => Promise<string>;
+    fileVersions: (
+      workspacePath: string,
+      relPath: string,
+      staged?: boolean,
+    ) => Promise<GitFileVersions>;
+    commitFileVersions: (
+      workspacePath: string,
+      relPath: string,
+      commitHash: string,
+    ) => Promise<GitFileVersions>;
+    log: (workspacePath: string, relPath?: string, limit?: number) => Promise<GitLogEntry[]>;
   };
   // ── Extensions (VSIX: themes + snippets) ────────────────────────────
   ext: {
@@ -506,6 +590,12 @@ export interface ElectronAPI {
       matches: { path: string; line: number; preview: string }[];
       truncated: boolean;
     }>;
+    reemplazarEnProyecto: (
+      workspacePath: string,
+      search: string,
+      replace: string,
+      options?: { previewOnly?: boolean },
+    ) => Promise<ReplacePreviewResult>;
     initContext: (workspacePath: string) => Promise<{
       tree: string;
       manifestFiles: { path: string; relPath: string; content: string }[];

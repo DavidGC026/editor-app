@@ -20,6 +20,7 @@ import {
   escribirArchivo,
   listarCarpeta,
   buscarEnProyecto,
+  reemplazarEnProyecto,
   collectInitContext,
   snapshotFolder,
   fileExists as agentFileExists,
@@ -33,7 +34,16 @@ import {
   uninstallExtension,
   setActiveTheme,
 } from './extensions';
-import { gitStatus, gitStage, gitUnstage, gitCommit } from './git';
+import {
+  gitStatus,
+  gitStage,
+  gitUnstage,
+  gitCommit,
+  gitDiff,
+  gitGetFileVersions,
+  gitGetCommitFileVersions,
+  gitLog,
+} from './git';
 import {
   ClaudeIdeEditorState,
   ClaudeIdeSelection,
@@ -566,6 +576,18 @@ ipcMain.on('window:maximize', () => {
 ipcMain.on('window:close', () => {
   mainWindow?.close();
 });
+
+// ── Native Edit Commands ────────────────────────────────────────────────
+function focusedContents() {
+  return BrowserWindow.getFocusedWindow()?.webContents || mainWindow?.webContents || null;
+}
+
+ipcMain.on('edit:undo', () => focusedContents()?.undo());
+ipcMain.on('edit:redo', () => focusedContents()?.redo());
+ipcMain.on('edit:cut', () => focusedContents()?.cut());
+ipcMain.on('edit:copy', () => focusedContents()?.copy());
+ipcMain.on('edit:paste', () => focusedContents()?.paste());
+ipcMain.on('edit:selectAll', () => focusedContents()?.selectAll());
 
 // ── Terminal (node-pty with child_process fallback) ──────────────────────
 //
@@ -1231,6 +1253,22 @@ ipcMain.handle('agent:buscarEnProyecto', async (_event, workspacePath: string, t
   return buscarEnProyecto(workspacePath, texto);
 });
 
+ipcMain.handle(
+  'agent:reemplazarEnProyecto',
+  async (
+    _event,
+    workspacePath: string,
+    search: string,
+    replace: string,
+    options?: { previewOnly?: boolean },
+  ) => {
+    if (!workspacePath || typeof search !== 'string' || typeof replace !== 'string') {
+      throw new Error('Argumentos inválidos.');
+    }
+    return reemplazarEnProyecto(workspacePath, search, replace, options ?? {});
+  },
+);
+
 ipcMain.handle('agent:initContext', async (_event, workspacePath: string) => {
   if (!workspacePath) throw new Error('Sin workspace abierto.');
   return collectInitContext(workspacePath);
@@ -1277,6 +1315,38 @@ ipcMain.handle('git:unstage', async (_event, workspacePath: string, relPaths: st
 ipcMain.handle('git:commit', async (_event, workspacePath: string, message: string) => {
   if (!workspacePath || typeof message !== 'string') throw new Error('Argumentos inválidos.');
   return gitCommit(workspacePath, message);
+});
+
+ipcMain.handle('git:diff', async (_event, workspacePath: string, relPath: string, staged = false) => {
+  if (!workspacePath || typeof relPath !== 'string') throw new Error('Argumentos inválidos.');
+  return gitDiff(workspacePath, relPath, Boolean(staged));
+});
+
+ipcMain.handle(
+  'git:fileVersions',
+  async (_event, workspacePath: string, relPath: string, staged = false) => {
+    if (!workspacePath || typeof relPath !== 'string') throw new Error('Argumentos inválidos.');
+    return gitGetFileVersions(workspacePath, relPath, Boolean(staged));
+  },
+);
+
+ipcMain.handle(
+  'git:commitFileVersions',
+  async (_event, workspacePath: string, relPath: string, commitHash: string) => {
+    if (!workspacePath || typeof relPath !== 'string' || typeof commitHash !== 'string') {
+      throw new Error('Argumentos inválidos.');
+    }
+    return gitGetCommitFileVersions(workspacePath, relPath, commitHash);
+  },
+);
+
+ipcMain.handle('git:log', async (_event, workspacePath: string, relPath?: string, limit?: number) => {
+  if (!workspacePath) throw new Error('Argumentos inválidos.');
+  return gitLog(
+    workspacePath,
+    typeof relPath === 'string' && relPath.trim() ? relPath : undefined,
+    typeof limit === 'number' ? limit : undefined,
+  );
 });
 
 // ── Extensions (VSIX: themes + snippets) ─────────────────────────────────

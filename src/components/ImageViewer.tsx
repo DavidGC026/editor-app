@@ -73,7 +73,7 @@ export default function ImageViewer({ fileName, dataUrl, fileSize }: ImageViewer
       {/* Image surface */}
       <div
         className="flex-1 flex items-center justify-center overflow-auto p-6"
-        style={{ background: `#2D2F38 ${checkerboard}` }}
+        style={{ background: `#2B2D35 ${checkerboard}` }}
       >
         {errored ? (
           <div className="flex flex-col items-center gap-2 text-forge-text/60">
