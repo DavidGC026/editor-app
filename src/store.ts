@@ -293,6 +293,11 @@ interface EditorState {
   closeSavedTabs: () => void;
   /** Activate the tab next to / before the active one (wraps around). */
   cycleTab: (direction: 1 | -1) => void;
+  /** Pin/unpin a tab. Pinned tabs move to the front of the tab bar. */
+  togglePinTab: (tabId: string) => void;
+  /** Reorder tabs: move `sourceId` to `targetId`'s position (drag & drop).
+   *  Pinned and unpinned tabs each stay within their own region. */
+  moveTab: (sourceId: string, targetId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
   clearPendingEditorReveal: (id: number) => void;
@@ -1758,18 +1763,32 @@ export const useStore = create<EditorState>((set, get) => ({
 
   closeOtherTabs: (tabId: string) => {
     set((state) => {
-      const keep = state.openTabs.filter((t) => t.id === tabId);
-      return { openTabs: keep, activeTabId: keep.length > 0 ? tabId : null };
+      const keep = state.openTabs.filter((t) => t.id === tabId || t.pinned);
+      return {
+        openTabs: keep,
+        activeTabId: keep.some((t) => t.id === tabId) ? tabId : state.activeTabId,
+      };
     });
   },
 
   closeAllTabs: () => {
-    set({ openTabs: [], activeTabId: null });
+    set((state) => {
+      const keep = state.openTabs.filter((t) => t.pinned);
+      const stillActive = keep.some((t) => t.id === state.activeTabId);
+      return {
+        openTabs: keep,
+        activeTabId: stillActive
+          ? state.activeTabId
+          : keep.length > 0
+            ? keep[0].id
+            : null,
+      };
+    });
   },
 
   closeSavedTabs: () => {
     set((state) => {
-      const keep = state.openTabs.filter((t) => t.isUnsaved);
+      const keep = state.openTabs.filter((t) => t.isUnsaved || t.pinned);
       const stillActive = keep.some((t) => t.id === state.activeTabId);
       return {
         openTabs: keep,
@@ -1779,6 +1798,40 @@ export const useStore = create<EditorState>((set, get) => ({
             ? keep[keep.length - 1].id
             : null,
       };
+    });
+  },
+
+  togglePinTab: (tabId: string) => {
+    set((state) => {
+      const tabs = [...state.openTabs];
+      const idx = tabs.findIndex((t) => t.id === tabId);
+      if (idx === -1) return {};
+      const tab = { ...tabs[idx], pinned: !tabs[idx].pinned };
+      tabs.splice(idx, 1);
+      const pinnedCount = tabs.filter((t) => t.pinned).length;
+      // Pinning appends at the end of the pinned region; unpinning drops the
+      // tab right after it (start of the unpinned region).
+      tabs.splice(pinnedCount, 0, tab);
+      return { openTabs: tabs };
+    });
+  },
+
+  moveTab: (sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return;
+    set((state) => {
+      const tabs = [...state.openTabs];
+      const from = tabs.findIndex((t) => t.id === sourceId);
+      if (from === -1) return {};
+      const [tab] = tabs.splice(from, 1);
+      let to = tabs.findIndex((t) => t.id === targetId);
+      if (to === -1) return {};
+      // Dragging rightwards drops after the target; leftwards, before it.
+      if (from <= to) to += 1;
+      // Keep each tab inside its own region (pinned first, then unpinned).
+      const pinnedCount = tabs.filter((t) => t.pinned).length;
+      to = tab.pinned ? Math.min(to, pinnedCount) : Math.max(to, pinnedCount);
+      tabs.splice(to, 0, tab);
+      return { openTabs: tabs };
     });
   },
 

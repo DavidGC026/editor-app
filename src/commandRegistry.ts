@@ -296,6 +296,14 @@ export function buildCommands(ctx: CommandBuildContext): Command[] {
           if (s.activeTabId) s.closeTab(s.activeTabId);
         }),
       }),
+      withCategory(ctx.activeTab.pinned ? 'Unpin Active Tab' : 'Pin Active Tab', 'File', {
+        id: 'tab-toggle-pin',
+        keywords: ['pin', 'fijar', 'anclar'],
+        action: wrap(() => {
+          const s = useStore.getState();
+          if (s.activeTabId) s.togglePinTab(s.activeTabId);
+        }),
+      }),
       withCategory('Close Other Tabs', 'File', {
         id: 'tab-close-others',
         action: wrap(() => {

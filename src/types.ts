@@ -16,6 +16,9 @@ export interface Tab {
   savedContent: string;
   language: string;
   isUnsaved: boolean;
+  /** Pinned tabs stay at the front of the tab bar and survive
+   *  "Close All" / "Close Others" / "Close Saved". */
+  pinned?: boolean;
   /** When set, the tab is an image preview (rendered in ImageViewer) rather
    *  than a Monaco text editor. Contains a data: URL for the image bytes. */
   imageDataUrl?: string;

@@ -13,6 +13,7 @@ import {
   FolderOpen,
   GitBranch,
   Globe,
+  Pin,
   Play,
   Save,
   Search,
@@ -423,7 +424,7 @@ function TabContextMenu({
     </div>
   );
 
-  const { closeTab, closeOtherTabs, closeAllTabs, closeSavedTabs, workspacePath } =
+  const { closeTab, closeOtherTabs, closeAllTabs, closeSavedTabs, togglePinTab, workspacePath } =
     useStore.getState();
   const isRealFile = !tab.gitDiff;
 
@@ -434,6 +435,8 @@ function TabContextMenu({
       style={{ top: y, left: x }}
       onClick={(e) => e.stopPropagation()}
     >
+      {item(tab.pinned ? 'Unpin Tab' : 'Pin Tab', () => togglePinTab(tab.id))}
+      <div className="context-menu-divider" />
       {item('Close', () => closeTab(tab.id))}
       {item('Close Others', () => closeOtherTabs(tab.id))}
       {item('Close Saved', () => closeSavedTabs())}
@@ -459,7 +462,11 @@ function TabBar() {
   const activeTabId = useStore((s) => s.activeTabId);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const closeTab = useStore((s) => s.closeTab);
+  const togglePinTab = useStore((s) => s.togglePinTab);
+  const moveTab = useStore((s) => s.moveTab);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const dragSourceIdRef = useRef<string | null>(null);
 
   if (openTabs.length === 0) return null;
 
@@ -467,9 +474,36 @@ function TabBar() {
     <div className="h-[35px] bg-forge-tabbar flex items-end overflow-x-auto select-none">
       {openTabs.map((tab) => {
         const isActive = tab.id === activeTabId;
+        const isDragTarget = dragOverId === tab.id && dragSourceIdRef.current !== tab.id;
         return (
           <div
             key={tab.id}
+            draggable
+            onDragStart={(e) => {
+              dragSourceIdRef.current = tab.id;
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', tab.id);
+            }}
+            onDragOver={(e) => {
+              if (!dragSourceIdRef.current) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              setDragOverId(tab.id);
+            }}
+            onDragLeave={() => {
+              setDragOverId((id) => (id === tab.id ? null : id));
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const sourceId = dragSourceIdRef.current || e.dataTransfer.getData('text/plain');
+              if (sourceId) moveTab(sourceId, tab.id);
+              dragSourceIdRef.current = null;
+              setDragOverId(null);
+            }}
+            onDragEnd={() => {
+              dragSourceIdRef.current = null;
+              setDragOverId(null);
+            }}
             onClick={() => setActiveTab(tab.id)}
             onAuxClick={(e) => {
               // Middle click closes the tab, like every browser/editor.
@@ -486,6 +520,7 @@ function TabBar() {
               ${isActive
                 ? 'bg-forge-tab-active'
                 : 'bg-forge-tabbar hover:bg-white/[0.03]'}
+              ${isDragTarget ? 'shadow-[inset_2px_0_0_0_#B65A48]' : ''}
             `}
           >
             {tab.isUnsaved && !tab.gitDiff && (
@@ -502,18 +537,32 @@ function TabBar() {
               {tab.name}
             </span>
 
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                closeTab(tab.id);
-              }}
-              className={`tab-close p-0.5 flex-shrink-0
-                ${isActive ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100'}
-              `}
-              style={{ color: isActive ? '#96969D' : '#96969D' }}
-            >
-              <X size={14} />
-            </button>
+            {tab.pinned ? (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePinTab(tab.id);
+                }}
+                title="Unpin"
+                className="p-0.5 flex-shrink-0 opacity-70 hover:opacity-100"
+                style={{ color: isActive ? '#B65A48' : '#96969D' }}
+              >
+                <Pin size={12} />
+              </button>
+            ) : (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTab(tab.id);
+                }}
+                className={`tab-close p-0.5 flex-shrink-0
+                  ${isActive ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100'}
+                `}
+                style={{ color: isActive ? '#96969D' : '#96969D' }}
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
         );
       })}
