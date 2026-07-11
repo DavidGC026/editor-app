@@ -1,0 +1,8 @@
+/.abacus.donotdelete
+/.claude
+/.electron-pack
+/.npmrc
+/dist
+/dist-electron
+/node_modules
+/release

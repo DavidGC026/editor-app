@@ -1,0 +1,69 @@
+{
+  "name": "forge",
+  "version": "1.0.0",
+  "description": "Forge — modern code editor built with Electron + React + TypeScript",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "scripts": {
+    "prep:electron": "shx mkdir -p dist-electron/assets && shx cp -R electron/assets/* dist-electron/assets/ && shx cp electron/dist-package.json dist-electron/package.json",
+    "build:electron": "tsc -p tsconfig.electron.json && pnpm run prep:electron",
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && pnpm run build:electron && electron .\"",
+    "build": "pnpm run build:electron && vite build",
+    "package": "pnpm run build && node scripts/prepare-pack.mjs && electron-builder --project .electron-pack",
+    "postinstall": "electron-builder install-app-deps",
+    "rebuild:native": "electron-rebuild -f -w node-pty"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "chokidar": "^3.6.0",
+    "diff": "^9.0.0",
+    "electron-store": "^8.2.0",
+    "lucide-react": "^0.344.0",
+    "monaco-editor": "^0.55.1",
+    "node-pty": "^1.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript-language-server": "^5.2.0",
+    "xterm": "^5.3.0",
+    "zustand": "^4.5.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "@types/diff": "^8.0.0",
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.17",
+    "concurrently": "^8.2.2",
+    "electron": "^28.2.1",
+    "electron-builder": "^24.9.1",
+    "postcss": "^8.4.35",
+    "shx": "^0.4.0",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.9.3",
+    "vite": "^5.1.3",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.forge.app",
+    "productName": "Forge",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "asarUnpack": [
+      "**/node_modules/node-pty/**/*"
+    ],
+    "npmRebuild": false,
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
+    }
+  }
+}
