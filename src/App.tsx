@@ -9,6 +9,7 @@ import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
 import AIPanel from './components/AIPanel/AIPanel';
 import type { ClaudeIdeEditorState } from './types';
+import { lspClient } from './lsp/client';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Drag dividers
@@ -281,6 +282,17 @@ export default function App() {
   useEffect(() => {
     void refreshAIConfig();
   }, [refreshAIConfig]);
+
+  // Mirror LSP diagnostics into the global store so the Problems panel can
+  // render them independently from Monaco markers.
+  useEffect(() => {
+    lspClient.setProblemsHandler((filePath, problems) => {
+      const state = useStore.getState();
+      if (!filePath) state.clearProblems();
+      else state.updateProblemsForFile(filePath, problems);
+    });
+    return () => lspClient.setProblemsHandler(null);
+  }, []);
 
   // Load installed VSIX extensions (themes + snippets) from disk.
   useEffect(() => {

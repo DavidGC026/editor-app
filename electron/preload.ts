@@ -124,9 +124,22 @@ export interface ElectronAPI {
       callback: (event: 'delta' | 'done' | 'error', data: any) => void,
     ) => { dispose: () => void };
   };
+  // Git (Source Control)
+  git: {
+    status: (workspacePath: string) => Promise<{
+      isRepo: boolean;
+      branch: string | null;
+      changes: { relPath: string; x: string; y: string }[];
+    }>;
+    stage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
+    unstage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
+    commit: (workspacePath: string, message: string) => Promise<string>;
+  };
   // Extensions (VSIX: themes + snippets)
   ext: {
     installVsix: () => Promise<any | null>;
+    installFromOpenVsx: (extensionId: string) => Promise<any>;
+    searchOpenVsx: (query: string, size?: number) => Promise<any>;
     list: () => Promise<{ extensions: any[]; activeTheme: string | null }>;
     uninstall: (id: string) => Promise<boolean>;
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
@@ -384,9 +397,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return { dispose: () => ipcRenderer.removeListener(channel, handler) };
     },
   },
+  // ── Git (Source Control) ──────────────────────────────────────────
+  git: {
+    status: (workspacePath: string) => ipcRenderer.invoke('git:status', workspacePath),
+    stage: (workspacePath: string, relPaths: string[]) =>
+      ipcRenderer.invoke('git:stage', workspacePath, relPaths),
+    unstage: (workspacePath: string, relPaths: string[]) =>
+      ipcRenderer.invoke('git:unstage', workspacePath, relPaths),
+    commit: (workspacePath: string, message: string) =>
+      ipcRenderer.invoke('git:commit', workspacePath, message),
+  },
   // ── Extensions (VSIX) ─────────────────────────────────────────────
   ext: {
     installVsix: () => ipcRenderer.invoke('ext:installVsix'),
+    installFromOpenVsx: (extensionId: string) =>
+      ipcRenderer.invoke('ext:installFromOpenVsx', extensionId),
+    searchOpenVsx: (query: string, size?: number) =>
+      ipcRenderer.invoke('ext:searchOpenVsx', query, size),
     list: () => ipcRenderer.invoke('ext:list'),
     uninstall: (id: string) => ipcRenderer.invoke('ext:uninstall', id),
     setActiveTheme: (themeId: string | null) =>

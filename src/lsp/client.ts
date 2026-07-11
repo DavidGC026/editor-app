@@ -15,9 +15,10 @@
 // exposed in preload.ts (window.electronAPI.lsp).
 // ─────────────────────────────────────────────────────────────────────────
 import type * as MonacoNS from 'monaco-editor';
-import type { LspDiagnostic, LspPublishDiagnosticsParams } from '../types';
+import type { LspDiagnostic, LspPublishDiagnosticsParams, Problem } from '../types';
 
 type Monaco = typeof MonacoNS;
+type ProblemsHandler = (filePath: string, problems: Problem[]) => void;
 
 // ── Path / URI helpers ───────────────────────────────────────────────────
 
@@ -40,6 +41,18 @@ export function pathToFileUri(p: string): string {
       .map((seg) => encodeURIComponent(seg).replace(/%3A/g, ':'))
       .join('/')
   );
+}
+
+function fileUriToPath(uri: string): string {
+  if (!uri.startsWith('file://')) return uri;
+  try {
+    const url = new URL(uri);
+    let p = decodeURIComponent(url.pathname);
+    if (/^\/[a-zA-Z]:\//.test(p)) p = p.slice(1);
+    return p;
+  } catch {
+    return decodeURIComponent(uri.replace(/^file:\/\//, ''));
+  }
 }
 
 /** Map a file path to the LSP `languageId`. Returns null for paths the
@@ -180,7 +193,7 @@ function convertCompletionItem(
     documentation,
     insertText: te?.newText ?? insertText,
     insertTextRules: isSnippet
-      ? monaco.languages.CompletionItemInsertTextRules.InsertAsSnippet
+      ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
       : undefined,
     sortText: item.sortText,
     filterText: item.filterText,
@@ -239,6 +252,7 @@ class LspClient {
   // Tracks which models have markers from us so we can clear them all
   // wholesale on workspace stop.
   private markedUris = new Set<string>();
+  private problemsHandler: ProblemsHandler | null = null;
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -307,6 +321,10 @@ class LspClient {
     } catch (err) {
       console.debug('[forge:lsp] stop failed:', (err as Error)?.message);
     }
+  }
+
+  setProblemsHandler(handler: ProblemsHandler | null): void {
+    this.problemsHandler = handler;
   }
 
   // ── Document lifecycle ─────────────────────────────────────────────────
@@ -511,6 +529,23 @@ class LspClient {
   // ── Diagnostics ────────────────────────────────────────────────────────
 
   private applyDiagnostics(params: LspPublishDiagnosticsParams): void {
+    const filePath = fileUriToPath(params.uri);
+    const problems: Problem[] = (params.diagnostics || []).map((d) => ({
+      filePath,
+      message: d.message || '',
+      severity: d.severity || 1,
+      source: d.source || 'typescript',
+      code:
+        typeof d.code === 'number' || typeof d.code === 'string'
+          ? String(d.code)
+          : undefined,
+      startLine: (d.range?.start?.line ?? 0) + 1,
+      startColumn: (d.range?.start?.character ?? 0) + 1,
+      endLine: (d.range?.end?.line ?? 0) + 1,
+      endColumn: (d.range?.end?.character ?? 0) + 1,
+    }));
+    this.problemsHandler?.(filePath, problems);
+
     if (!this.monaco) return;
     const monaco = this.monaco;
     const uri = params.uri;

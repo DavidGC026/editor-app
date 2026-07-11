@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, nativeImage, clipboard } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, nativeImage, clipboard, screen } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -27,10 +27,13 @@ import {
 } from './agent-tools';
 import {
   installVsix,
+  installFromOpenVsx,
+  searchOpenVsx,
   listExtensions,
   uninstallExtension,
   setActiveTheme,
 } from './extensions';
+import { gitStatus, gitStage, gitUnstage, gitCommit } from './git';
 import {
   ClaudeIdeEditorState,
   ClaudeIdeSelection,
@@ -279,7 +282,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    minWidth: 800,
+    minWidth: 520,
     minHeight: 600,
     frame: false,
     title: 'Forge',
@@ -293,6 +296,8 @@ function createWindow() {
       sandbox: false,
     },
   });
+
+  installEdgeSnap(mainWindow);
 
   // Ensure Linux/Wayland docks pick up the icon as well.
   if (process.platform === 'linux' && icon && !icon.isEmpty()) {
@@ -350,6 +355,59 @@ function createWindow() {
     void stopLiveServer().catch(() => undefined);
     lspManager.setWindow(null);
     mainWindow = null;
+  });
+}
+
+function installEdgeSnap(window: BrowserWindow): void {
+  // Linux window managers often do not provide edge-snap for frameless
+  // Electron windows. Keep the native behavior where it exists, and add a
+  // small fallback for the left/right/top edges after the user stops moving.
+  if (process.platform !== 'linux') return;
+
+  const threshold = 18;
+  let timer: NodeJS.Timeout | null = null;
+  let applying = false;
+
+  window.on('move', () => {
+    if (applying || window.isDestroyed() || window.isMaximized() || window.isFullScreen()) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      if (window.isDestroyed() || window.isMaximized() || window.isFullScreen()) return;
+
+      const bounds = window.getBounds();
+      const display = screen.getDisplayMatching(bounds);
+      const area = display.workArea;
+      const leftDistance = Math.abs(bounds.x - area.x);
+      const rightDistance = Math.abs(bounds.x + bounds.width - (area.x + area.width));
+      const topDistance = Math.abs(bounds.y - area.y);
+
+      let next: Electron.Rectangle | null = null;
+      if (leftDistance <= threshold) {
+        next = {
+          x: area.x,
+          y: area.y,
+          width: Math.floor(area.width / 2),
+          height: area.height,
+        };
+      } else if (rightDistance <= threshold) {
+        const width = Math.floor(area.width / 2);
+        next = {
+          x: area.x + area.width - width,
+          y: area.y,
+          width,
+          height: area.height,
+        };
+      } else if (topDistance <= threshold) {
+        window.maximize();
+        return;
+      }
+
+      if (!next) return;
+      applying = true;
+      window.setBounds(next, true);
+      setTimeout(() => { applying = false; }, 250);
+    }, 160);
   });
 }
 
@@ -1196,9 +1254,46 @@ ipcMain.handle('agent:readFileSafe', async (_event, workspacePath: string, ruta:
   return agentReadFileSafe(workspacePath, ruta);
 });
 
+// ── Git (Source Control panel) ───────────────────────────────────────────
+ipcMain.handle('git:status', async (_event, workspacePath: string) => {
+  if (typeof workspacePath !== 'string' || !workspacePath) {
+    return { isRepo: false, branch: null, changes: [] };
+  }
+  return gitStatus(workspacePath);
+});
+
+ipcMain.handle('git:stage', async (_event, workspacePath: string, relPaths: string[]) => {
+  if (!workspacePath || !Array.isArray(relPaths)) throw new Error('Argumentos inválidos.');
+  await gitStage(workspacePath, relPaths.filter((p) => typeof p === 'string'));
+  return true;
+});
+
+ipcMain.handle('git:unstage', async (_event, workspacePath: string, relPaths: string[]) => {
+  if (!workspacePath || !Array.isArray(relPaths)) throw new Error('Argumentos inválidos.');
+  await gitUnstage(workspacePath, relPaths.filter((p) => typeof p === 'string'));
+  return true;
+});
+
+ipcMain.handle('git:commit', async (_event, workspacePath: string, message: string) => {
+  if (!workspacePath || typeof message !== 'string') throw new Error('Argumentos inválidos.');
+  return gitCommit(workspacePath, message);
+});
+
 // ── Extensions (VSIX: themes + snippets) ─────────────────────────────────
 ipcMain.handle('ext:installVsix', async () => {
   return installVsix(mainWindow);
+});
+
+ipcMain.handle('ext:installFromOpenVsx', async (_event, extensionId: string) => {
+  if (typeof extensionId !== 'string' || !extensionId.trim()) {
+    throw new Error('Identificador de extensión requerido.');
+  }
+  return installFromOpenVsx(extensionId);
+});
+
+ipcMain.handle('ext:searchOpenVsx', async (_event, query: string, size?: number) => {
+  if (typeof query !== 'string') throw new Error('Consulta de búsqueda inválida.');
+  return searchOpenVsx(query, typeof size === 'number' ? size : 20);
 });
 
 ipcMain.handle('ext:list', async () => {

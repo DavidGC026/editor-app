@@ -229,6 +229,23 @@ export interface PendingDiff {
   relPath: string;
 }
 
+// ── Git (Source Control) ────────────────────────────────────────────────
+
+export interface GitChange {
+  /** Path relative to the repo root, forward slashes. */
+  relPath: string;
+  /** Staged (index) status letter: M/A/D/R/C/U/? or space. */
+  x: string;
+  /** Working-tree status letter. */
+  y: string;
+}
+
+export interface GitStatusPayload {
+  isRepo: boolean;
+  branch: string | null;
+  changes: GitChange[];
+}
+
 // ── Extensions (VSIX: themes + snippets) ───────────────────────────────
 
 export interface ExtensionTheme {
@@ -265,6 +282,27 @@ export interface InstalledExtension {
   description: string;
   themes: ExtensionTheme[];
   snippets: ExtensionSnippets[];
+}
+
+export interface MarketplaceExtension {
+  id: string;
+  name: string;
+  namespace: string;
+  displayName: string;
+  description: string;
+  version: string;
+  iconUrl: string | null;
+  downloadCount: number;
+  averageRating: number | null;
+  reviewCount: number;
+  verified: boolean;
+  deprecated: boolean;
+  lastUpdated: string | null;
+}
+
+export interface MarketplaceSearchResult {
+  total: number;
+  extensions: MarketplaceExtension[];
 }
 
 // ── Claude Code IDE bridge ─────────────────────────────────────────────
@@ -337,10 +375,11 @@ export interface ElectronAPI {
     /** Starts a static HTTP server rooted at the directory of the given
      *  HTML file. If a server is already running it is stopped first. */
     start: (htmlPath: string) => Promise<{
-      port: number;
-      root: string;
-      url: string;
-      htmlFile: string;
+      active: boolean;
+      port: number | null;
+      root: string | null;
+      htmlFile: string | null;
+      url: string | null;
     }>;
     /** Stops the live server (no-op if not running). */
     stop: () => Promise<boolean>;
@@ -406,11 +445,22 @@ export interface ElectronAPI {
       callback: (event: 'delta' | 'done' | 'error', data: any) => void,
     ) => TerminalDisposable;
   };
+  // ── Git (Source Control) ────────────────────────────────────────────
+  git: {
+    status: (workspacePath: string) => Promise<GitStatusPayload>;
+    stage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
+    unstage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
+    /** Commits staged changes. Resolves with git's stdout summary. */
+    commit: (workspacePath: string, message: string) => Promise<string>;
+  };
   // ── Extensions (VSIX: themes + snippets) ────────────────────────────
   ext: {
     /** Opens a file picker and installs the chosen .vsix. Returns the
      *  installed extension payload, or null if the dialog was cancelled. */
     installVsix: () => Promise<InstalledExtension | null>;
+    /** Downloads and installs `publisher.name` from open-vsx.org. */
+    installFromOpenVsx: (extensionId: string) => Promise<InstalledExtension>;
+    searchOpenVsx: (query: string, size?: number) => Promise<MarketplaceSearchResult>;
     list: () => Promise<{ extensions: InstalledExtension[]; activeTheme: string | null }>;
     uninstall: (id: string) => Promise<boolean>;
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
@@ -493,6 +543,18 @@ export interface LspPublishDiagnosticsParams {
   uri: string;
   version?: number;
   diagnostics: LspDiagnostic[];
+}
+
+export interface Problem {
+  filePath: string;
+  message: string;
+  severity: 1 | 2 | 3 | 4;
+  source: string;
+  code?: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
 }
 
 declare global {

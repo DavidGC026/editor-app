@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { X, Terminal as TerminalIcon, AlertTriangle, FileOutput, Bug } from 'lucide-react';
-import type { BottomTab } from '../types';
+import type { BottomTab, Problem } from '../types';
 import { Terminal } from 'xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
@@ -17,6 +17,72 @@ const tabs: PanelTab[] = [
   { id: 'output', label: 'OUTPUT', icon: <FileOutput size={13} /> },
   { id: 'debug', label: 'DEBUG CONSOLE', icon: <Bug size={13} /> },
 ];
+
+function relativePath(workspacePath: string | null, filePath: string): string {
+  if (!workspacePath) return filePath;
+  const root = workspacePath.replace(/\\/g, '/');
+  const file = filePath.replace(/\\/g, '/');
+  if (file.startsWith(root + '/')) return file.slice(root.length + 1);
+  return filePath;
+}
+
+function severityLabel(problem: Problem): string {
+  if (problem.severity === 1) return 'Error';
+  if (problem.severity === 2) return 'Warning';
+  if (problem.severity === 3) return 'Info';
+  return 'Hint';
+}
+
+function severityColor(problem: Problem): string {
+  if (problem.severity === 1) return '#FF5370';
+  if (problem.severity === 2) return '#FFCB6B';
+  if (problem.severity === 3) return '#89DDFF';
+  return '#A1A3AF';
+}
+
+function ProblemsView() {
+  const problems = useStore((s) => s.problems);
+  const workspacePath = useStore((s) => s.workspacePath);
+  const openFilePath = useStore((s) => s.openFilePath);
+
+  if (problems.length === 0) {
+    return (
+      <div className="h-full flex items-center px-3 font-mono text-[13px] text-forge-text/70">
+        No problems detected in workspace.
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto sidebar-scroll p-2 font-mono text-[12px] text-forge-text">
+      {problems.map((problem, index) => (
+        <button
+          key={`${problem.filePath}:${problem.startLine}:${problem.startColumn}:${index}`}
+          onClick={() => void openFilePath(problem.filePath, { line: problem.startLine })}
+          className="w-full flex items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-white/5 transition-colors"
+        >
+          <AlertTriangle
+            size={13}
+            className="mt-0.5 flex-shrink-0"
+            style={{ color: severityColor(problem) }}
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">
+              {problem.message}
+            </span>
+            <span className="block text-[11px] text-forge-text/45 truncate">
+              {relativePath(workspacePath, problem.filePath)}:{problem.startLine}:{problem.startColumn}
+              {' · '}
+              {severityLabel(problem)}
+              {problem.code ? ` · ${problem.code}` : ''}
+              {problem.source ? ` · ${problem.source}` : ''}
+            </span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // XTerm-powered Terminal
@@ -403,9 +469,7 @@ export default function BottomPanel() {
         </div>
 
         {activeBottomTab === 'problems' && (
-          <div className="p-3 font-mono text-[13px] text-forge-text">
-            No problems detected in workspace.
-          </div>
+          <ProblemsView />
         )}
         {activeBottomTab === 'output' && (
           <div className="p-3 font-mono text-[13px] text-forge-text">

@@ -10,7 +10,7 @@
 // it into userData/extensions/<publisher.name>/ and keep a registry in the
 // same JSON config file the rest of the app uses.
 
-import { app, dialog, BrowserWindow } from 'electron';
+import { app, dialog, net, BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { readZipEntries } from './zip';
@@ -43,6 +43,27 @@ export interface InstalledExtensionPayload {
   description: string;
   themes: ExtensionThemePayload[];
   snippets: ExtensionSnippetsPayload[];
+}
+
+export interface MarketplaceExtensionPayload {
+  id: string;
+  name: string;
+  namespace: string;
+  displayName: string;
+  description: string;
+  version: string;
+  iconUrl: string | null;
+  downloadCount: number;
+  averageRating: number | null;
+  reviewCount: number;
+  verified: boolean;
+  deprecated: boolean;
+  lastUpdated: string | null;
+}
+
+export interface MarketplaceSearchPayload {
+  total: number;
+  extensions: MarketplaceExtensionPayload[];
 }
 
 interface RegistryEntry {
@@ -323,6 +344,114 @@ export function installVsixFromPath(vsixPath: string): InstalledExtensionPayload
   saveRegistry(registry);
 
   return entryToPayload(entry);
+}
+
+// ── Open VSX (`ext install publisher.name`) ─────────────────────────────
+// Open VSX (open-vsx.org) is the vendor-neutral extension registry used by
+// VSCode forks — the Microsoft marketplace is licensed for MS products only.
+
+export async function installFromOpenVsx(extensionId: string): Promise<InstalledExtensionPayload> {
+  const match = extensionId.trim().match(/^([A-Za-z0-9][\w.-]*)\.([A-Za-z0-9][\w-]*)$/);
+  if (!match) {
+    throw new Error(
+      `Identificador inválido: "${extensionId}". Usa el formato publisher.nombre ` +
+        '(ej. dracula-theme.theme-dracula).',
+    );
+  }
+  const [, namespace, name] = match;
+
+  const metaRes = await net.fetch(
+    `https://open-vsx.org/api/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/latest`,
+  );
+  if (metaRes.status === 404) {
+    throw new Error(`No se encontró "${namespace}.${name}" en Open VSX (open-vsx.org).`);
+  }
+  if (!metaRes.ok) {
+    throw new Error(`Open VSX respondió ${metaRes.status} al buscar "${namespace}.${name}".`);
+  }
+  const meta: any = await metaRes.json();
+  const downloadUrl: string | undefined = meta?.files?.download;
+  if (!downloadUrl) {
+    throw new Error(`"${namespace}.${name}" no tiene un paquete descargable en Open VSX.`);
+  }
+
+  const dlRes = await net.fetch(downloadUrl);
+  if (!dlRes.ok) {
+    throw new Error(`La descarga del VSIX falló (HTTP ${dlRes.status}).`);
+  }
+  const buf = Buffer.from(await dlRes.arrayBuffer());
+
+  const tmpPath = path.join(app.getPath('temp'), `forge-vsix-${Date.now()}.vsix`);
+  fs.writeFileSync(tmpPath, buf);
+  try {
+    return installVsixFromPath(tmpPath);
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeMarketplaceExtension(raw: any): MarketplaceExtensionPayload | null {
+  const namespace = typeof raw?.namespace === 'string' ? raw.namespace : '';
+  const name = typeof raw?.name === 'string' ? raw.name : '';
+  if (!namespace || !name) return null;
+
+  return {
+    id: `${namespace}.${name}`.toLowerCase(),
+    namespace,
+    name,
+    displayName:
+      typeof raw.displayName === 'string' && raw.displayName.trim()
+        ? raw.displayName
+        : name,
+    description: typeof raw.description === 'string' ? raw.description : '',
+    version: typeof raw.version === 'string' ? raw.version : '',
+    iconUrl: typeof raw?.files?.icon === 'string' ? raw.files.icon : null,
+    downloadCount: asNumber(raw.downloadCount),
+    averageRating:
+      typeof raw.averageRating === 'number' && Number.isFinite(raw.averageRating)
+        ? raw.averageRating
+        : null,
+    reviewCount: asNumber(raw.reviewCount),
+    verified: Boolean(raw.verified),
+    deprecated: Boolean(raw.deprecated),
+    lastUpdated: typeof raw.timestamp === 'string' ? raw.timestamp : null,
+  };
+}
+
+export async function searchOpenVsx(
+  query: string,
+  size = 20,
+): Promise<MarketplaceSearchPayload> {
+  const cleanQuery = query.trim();
+  const safeSize = Math.max(1, Math.min(50, Math.round(size)));
+  const url = new URL('https://open-vsx.org/api/-/search');
+  if (cleanQuery) url.searchParams.set('query', cleanQuery);
+  url.searchParams.set('size', String(safeSize));
+  url.searchParams.set('sortBy', 'relevance');
+  url.searchParams.set('sortOrder', 'desc');
+
+  const res = await net.fetch(url.toString());
+  if (!res.ok) {
+    throw new Error(`Open VSX respondió ${res.status} al buscar extensiones.`);
+  }
+
+  const data: any = await res.json();
+  const extensions = Array.isArray(data?.extensions)
+    ? data.extensions
+        .map(normalizeMarketplaceExtension)
+        .filter((ext: MarketplaceExtensionPayload | null): ext is MarketplaceExtensionPayload =>
+          Boolean(ext),
+        )
+    : [];
+
+  return {
+    total: asNumber(data?.totalSize, extensions.length),
+    extensions,
+  };
 }
 
 export function uninstallExtension(id: string): boolean {

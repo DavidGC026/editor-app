@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useStore } from '../store';
-import { isHtmlFile, type TreeNode } from '../types';
+import { isHtmlFile, type GitChange, type TreeNode } from '../types';
 import ExtensionsPanel from './ExtensionsPanel';
 import {
   ChevronRight,
@@ -16,6 +16,17 @@ import {
   ListTree,
   History,
   Globe,
+  RefreshCw,
+  PlusCircle,
+  MinusCircle,
+  CheckCircle2,
+  GitCommit,
+  Play,
+  Terminal as TerminalIcon,
+  Package,
+  Hammer,
+  Loader2,
+  XCircle,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -41,6 +52,39 @@ function getActiveFolderPaths(activeFilePath: string | null): Set<string> {
     if (cur) result.add(cur);
   }
   return result;
+}
+
+function joinPath(parent: string, child: string): string {
+  const sep = parent.includes('\\') && !parent.includes('/') ? '\\' : '/';
+  return parent.endsWith(sep) ? `${parent}${child}` : `${parent}${sep}${child}`;
+}
+
+function gitStatusLabel(change: GitChange): string {
+  if (change.x === '?' || change.y === '?') return 'U';
+  if (change.x.trim()) return change.x;
+  if (change.y.trim()) return change.y;
+  return 'M';
+}
+
+function gitStatusTitle(change: GitChange): string {
+  const code = gitStatusLabel(change);
+  const labels: Record<string, string> = {
+    M: 'Modified',
+    A: 'Added',
+    D: 'Deleted',
+    R: 'Renamed',
+    C: 'Copied',
+    U: 'Untracked',
+  };
+  return labels[code] || code;
+}
+
+function isStaged(change: GitChange): boolean {
+  return change.x !== ' ' && change.x !== '?' && change.x !== '';
+}
+
+function isUnstaged(change: GitChange): boolean {
+  return change.y !== ' ' && change.y !== '';
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -881,6 +925,429 @@ function BottomSections() {
 // ─────────────────────────────────────────────────────────────────────────
 // Placeholder panels (for non-explorer activity items)
 // ─────────────────────────────────────────────────────────────────────────
+function SourceControlPanel() {
+  const workspacePath = useStore((s) => s.workspacePath);
+  const gitIsRepo = useStore((s) => s.gitIsRepo);
+  const gitBranch = useStore((s) => s.gitBranch);
+  const gitChanges = useStore((s) => s.gitChanges);
+  const gitBusy = useStore((s) => s.gitBusy);
+  const gitError = useStore((s) => s.gitError);
+  const refreshGitStatus = useStore((s) => s.refreshGitStatus);
+  const gitStageFiles = useStore((s) => s.gitStageFiles);
+  const gitUnstageFiles = useStore((s) => s.gitUnstageFiles);
+  const gitCommitChanges = useStore((s) => s.gitCommitChanges);
+  const openFilePath = useStore((s) => s.openFilePath);
+  const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
+
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    void refreshGitStatus();
+  }, [refreshGitStatus, workspacePath]);
+
+  const staged = gitChanges.filter(isStaged);
+  const unstaged = gitChanges.filter((change) => !isStaged(change) || isUnstaged(change));
+  const canCommit = staged.length > 0 && message.trim().length > 0 && !gitBusy;
+
+  const openChange = (change: GitChange) => {
+    if (!workspacePath) return;
+    void openFilePath(joinPath(workspacePath, change.relPath));
+  };
+
+  const commit = async () => {
+    if (!canCommit) return;
+    const ok = await gitCommitChanges(message.trim());
+    if (ok) setMessage('');
+  };
+
+  const renderChange = (change: GitChange, mode: 'unstaged' | 'staged') => (
+    <div
+      key={`${mode}-${change.relPath}-${change.x}-${change.y}`}
+      className="group flex items-center gap-2 h-[28px] px-2 rounded hover:bg-white/5 text-[12px]"
+    >
+      <button
+        onClick={() => openChange(change)}
+        title={change.relPath}
+        className="flex items-center gap-2 min-w-0 flex-1 text-left"
+      >
+        <span
+          className="w-5 h-5 rounded bg-forge-input border border-forge-border/60 flex items-center justify-center text-[10px] text-forge-accent flex-shrink-0"
+          title={gitStatusTitle(change)}
+        >
+          {gitStatusLabel(change)}
+        </span>
+        <span className="truncate text-forge-text">{change.relPath}</span>
+      </button>
+      {mode === 'unstaged' ? (
+        <button
+          onClick={() => void gitStageFiles([change.relPath])}
+          disabled={gitBusy}
+          title="Stage"
+          className="opacity-0 group-hover:opacity-100 text-forge-text hover:text-forge-accent disabled:opacity-30"
+        >
+          <PlusCircle size={14} />
+        </button>
+      ) : (
+        <button
+          onClick={() => void gitUnstageFiles([change.relPath])}
+          disabled={gitBusy}
+          title="Unstage"
+          className="opacity-0 group-hover:opacity-100 text-forge-text hover:text-forge-accent disabled:opacity-30"
+        >
+          <MinusCircle size={14} />
+        </button>
+      )}
+    </div>
+  );
+
+  if (!workspacePath) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4 text-forge-text">
+        <GitBranch size={36} className="text-forge-text/60" />
+        <p className="text-sm text-center">Open a folder to use Source Control</p>
+      </div>
+    );
+  }
+
+  if (!gitIsRepo) {
+    return (
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="h-[35px] flex items-center justify-between px-4 text-[11px] uppercase tracking-wide text-forge-text/70 flex-shrink-0">
+          <span>Source Control</span>
+          <button
+            onClick={() => void refreshGitStatus()}
+            title="Refresh"
+            className="text-forge-text hover:text-forge-accent"
+          >
+            <RefreshCw size={13} className={gitBusy ? 'animate-spin' : ''} />
+          </button>
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4 text-center text-forge-text">
+          <GitBranch size={36} className="text-forge-text/50" />
+          <p className="text-sm">This folder is not a Git repository</p>
+          <button
+            onClick={() => runCommandInTerminal('git init')}
+            className="px-3 py-1.5 rounded bg-forge-accent/15 text-forge-accent text-[12px] hover:bg-forge-accent/25"
+          >
+            Initialize Repository
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="h-[35px] flex items-center justify-between px-4 text-[11px] uppercase tracking-wide text-forge-text/70 flex-shrink-0">
+        <span>Source Control</span>
+        <button
+          onClick={() => void refreshGitStatus()}
+          title="Refresh"
+          className="text-forge-text hover:text-forge-accent"
+        >
+          <RefreshCw size={13} className={gitBusy ? 'animate-spin' : ''} />
+        </button>
+      </div>
+
+      <div className="px-3 pb-3 flex-shrink-0">
+        <div className="flex items-center gap-2 text-[12px] text-forge-text/70 mb-2">
+          <GitBranch size={13} className="text-forge-accent" />
+          <span className="truncate">{gitBranch || 'HEAD'}</span>
+          <span className="text-forge-text/35">·</span>
+          <span className="text-forge-text/50">{gitChanges.length} changes</span>
+        </div>
+        <textarea
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="Message (Ctrl+Enter to commit)"
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+              e.preventDefault();
+              void commit();
+            }
+          }}
+          className="w-full h-[64px] resize-none bg-forge-input text-forge-text text-[12px] px-2 py-1.5 rounded outline-none border border-transparent focus:border-forge-accent/60"
+        />
+        <button
+          onClick={() => void commit()}
+          disabled={!canCommit}
+          className="mt-1.5 w-full flex items-center justify-center gap-2 rounded bg-forge-accent/15 text-forge-accent text-[12px] py-1.5 hover:bg-forge-accent/25 disabled:opacity-40 disabled:hover:bg-forge-accent/15"
+        >
+          <GitCommit size={13} />
+          Commit Staged
+        </button>
+        {gitError && (
+          <p className="mt-2 text-[11px] leading-snug text-red-400/90">{gitError}</p>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto sidebar-scroll px-3 pb-4">
+        {gitChanges.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-8 text-forge-text/40">
+            <CheckCircle2 size={28} />
+            <p className="text-[11px]">Working tree clean</p>
+          </div>
+        ) : (
+          <>
+            {unstaged.length > 0 && (
+              <div className="mb-3">
+                <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
+                  <span>Changes ({unstaged.length})</span>
+                  <button
+                    onClick={() => void gitStageFiles(unstaged.map((c) => c.relPath))}
+                    disabled={gitBusy}
+                    title="Stage All"
+                    className="text-forge-text hover:text-forge-accent disabled:opacity-30"
+                  >
+                    <PlusCircle size={13} />
+                  </button>
+                </div>
+                {unstaged.map((change) => renderChange(change, 'unstaged'))}
+              </div>
+            )}
+            {staged.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
+                  <span>Staged ({staged.length})</span>
+                  <button
+                    onClick={() => void gitUnstageFiles(staged.map((c) => c.relPath))}
+                    disabled={gitBusy}
+                    title="Unstage All"
+                    className="text-forge-text hover:text-forge-accent disabled:opacity-30"
+                  >
+                    <MinusCircle size={13} />
+                  </button>
+                </div>
+                {staged.map((change) => renderChange(change, 'staged'))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RunDebugPanel() {
+  const workspacePath = useStore((s) => s.workspacePath);
+  const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
+
+  const commands = [
+    { id: 'dev', label: 'npm run dev', command: 'npm run dev', icon: <Play size={14} /> },
+    { id: 'test', label: 'npm test', command: 'npm test', icon: <CheckCircle2 size={14} /> },
+    { id: 'build', label: 'npm run build', command: 'npm run build', icon: <Hammer size={14} /> },
+    { id: 'start', label: 'npm start', command: 'npm start', icon: <Package size={14} /> },
+  ];
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="h-[35px] flex items-center justify-between px-4 text-[11px] uppercase tracking-wide text-forge-text/70 flex-shrink-0">
+        <span>Run and Debug</span>
+      </div>
+
+      {!workspacePath ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4 text-center text-forge-text">
+          <Bug size={36} className="text-forge-text/50" />
+          <p className="text-sm">Open a folder to run commands</p>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto sidebar-scroll px-3 pb-4">
+          <div className="text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
+            Common Tasks
+          </div>
+          <div className="space-y-1">
+            {commands.map((cmd) => (
+              <button
+                key={cmd.id}
+                onClick={() => runCommandInTerminal(cmd.command)}
+                className="w-full flex items-center gap-2 rounded px-2 py-2 text-left hover:bg-white/5 transition-colors"
+              >
+                <span className="w-7 h-7 rounded bg-forge-accent/10 text-forge-accent border border-forge-accent/20 flex items-center justify-center flex-shrink-0">
+                  {cmd.icon}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12px] text-forge-text-strong truncate">
+                    {cmd.label}
+                  </span>
+                  <span className="block text-[10px] text-forge-text/45 truncate">
+                    Run in integrated terminal
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4 text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
+            Agents
+          </div>
+          <div className="space-y-1">
+            {[
+              ['Codex', 'codex'],
+              ['Claude Code', 'claude'],
+              ['Cursor Agent', 'cursor-agent'],
+            ].map(([label, command]) => (
+              <button
+                key={command}
+                onClick={() => runCommandInTerminal(command)}
+                className="w-full flex items-center gap-2 rounded px-2 py-2 text-left hover:bg-white/5 transition-colors"
+              >
+                <span className="w-7 h-7 rounded bg-forge-input border border-forge-border/60 text-forge-accent flex items-center justify-center flex-shrink-0">
+                  <TerminalIcon size={14} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12px] text-forge-text-strong truncate">
+                    {label}
+                  </span>
+                  <span className="block text-[10px] text-forge-text/45 truncate">
+                    {command}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface SearchMatch {
+  path: string;
+  line: number;
+  preview: string;
+}
+
+function relativePath(workspacePath: string | null, filePath: string): string {
+  if (!workspacePath) return filePath;
+  const normalizedWorkspace = workspacePath.replace(/\\/g, '/');
+  const normalizedFile = filePath.replace(/\\/g, '/');
+  if (normalizedFile.startsWith(normalizedWorkspace + '/')) {
+    return normalizedFile.slice(normalizedWorkspace.length + 1);
+  }
+  return filePath;
+}
+
+function SearchPanel() {
+  const workspacePath = useStore((s) => s.workspacePath);
+  const openFilePath = useStore((s) => s.openFilePath);
+  const [query, setQuery] = useState('');
+  const [matches, setMatches] = useState<SearchMatch[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState(false);
+
+  const runSearch = useCallback(async (term: string) => {
+    const q = term.trim();
+    if (!workspacePath || q.length < 2) {
+      setMatches([]);
+      setError(null);
+      setTruncated(false);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.electronAPI.agent.buscarEnProyecto(workspacePath, q);
+      setMatches(result.matches || []);
+      setTruncated(Boolean(result.truncated));
+    } catch (err) {
+      setMatches([]);
+      setTruncated(false);
+      setError((err as Error).message || 'Search failed.');
+    } finally {
+      setBusy(false);
+    }
+  }, [workspacePath]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void runSearch(query);
+    }, query.trim().length >= 2 ? 220 : 0);
+    return () => window.clearTimeout(timer);
+  }, [query, runSearch]);
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="h-[35px] flex items-center justify-between px-4 text-[11px] uppercase tracking-wide text-forge-text/70 flex-shrink-0">
+        <span>Search</span>
+        {busy && <Loader2 size={12} className="animate-spin text-forge-accent" />}
+      </div>
+
+      <div className="px-3 pb-2 flex-shrink-0">
+        <div className="relative">
+          <Search
+            size={13}
+            className="absolute left-2 top-1/2 -translate-y-1/2 text-forge-text/45"
+          />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search in files"
+            spellCheck={false}
+            className="w-full bg-forge-input text-forge-text text-[12px] pl-7 pr-7 py-1.5 rounded outline-none border border-transparent focus:border-forge-accent/60"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              title="Clear search"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-forge-text/50 hover:text-forge-text"
+            >
+              <XCircle size={13} />
+            </button>
+          )}
+        </div>
+        {error && <p className="mt-2 text-[11px] text-red-400/90">{error}</p>}
+      </div>
+
+      <div className="flex-1 overflow-y-auto sidebar-scroll px-3 pb-4">
+        {!workspacePath ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-10 text-forge-text/50">
+            <Search size={32} />
+            <p className="text-[12px]">Open a folder to search</p>
+          </div>
+        ) : query.trim().length < 2 ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-10 text-forge-text/40">
+            <Search size={32} />
+            <p className="text-[12px]">Type at least 2 characters</p>
+          </div>
+        ) : matches.length === 0 && !busy ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-10 text-forge-text/40">
+            <Search size={32} />
+            <p className="text-[12px]">No results</p>
+          </div>
+        ) : (
+          <>
+            <div className="text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
+              Results ({matches.length}{truncated ? '+' : ''})
+            </div>
+            <div className="space-y-1">
+              {matches.map((match, index) => (
+                <button
+                  key={`${match.path}:${match.line}:${index}`}
+                  onClick={() => void openFilePath(match.path, { line: match.line })}
+                  className="w-full rounded px-2 py-1.5 text-left hover:bg-white/5 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12px] text-forge-text-strong truncate">
+                      {relativePath(workspacePath, match.path)}
+                    </span>
+                    <span className="text-[10px] text-forge-text/40 flex-shrink-0">
+                      {match.line}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] leading-snug text-forge-text/55 truncate">
+                    {match.preview.trim()}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PlaceholderPanel({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 text-forge-text">
@@ -902,11 +1369,11 @@ export default function SideBar() {
       case 'explorer':
         return <ExplorerPanel />;
       case 'search':
-        return <PlaceholderPanel icon={<Search size={36} />} title="Search" />;
+        return <SearchPanel />;
       case 'git':
-        return <PlaceholderPanel icon={<GitBranch size={36} />} title="Source Control" />;
+        return <SourceControlPanel />;
       case 'debug':
-        return <PlaceholderPanel icon={<Bug size={36} />} title="Run and Debug" />;
+        return <RunDebugPanel />;
       case 'extensions':
         return <ExtensionsPanel />;
       default:

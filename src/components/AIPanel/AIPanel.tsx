@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plus, ChevronDown, Sparkles, Check, Settings2 } from 'lucide-react';
+import {
+  Plus,
+  ChevronDown,
+  Sparkles,
+  Check,
+  Settings2,
+  Code2,
+  MessageSquare,
+  MousePointer2,
+} from 'lucide-react';
 import { useStore } from '../../store';
 import ApiKeyModal from './ApiKeyModal';
 import ChatMessages from './ChatMessages';
@@ -32,6 +41,7 @@ function TopBar() {
   const setAvailableModels = useStore((s) => s.setAIAvailableModels);
   const menuOpen = useStore((s) => s.aiModelMenuOpen);
   const setMenuOpen = useStore((s) => s.setAIModelMenuOpen);
+  const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
 
   const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
   const [loadingList, setLoadingList] = useState(false);
@@ -118,6 +128,11 @@ function TopBar() {
   };
 
   const models = activeProvider ? availableModels[activeProvider] || [] : [];
+  const agentButtons = [
+    { id: 'codex', label: 'Run Codex', command: 'codex', icon: <Code2 size={14} /> },
+    { id: 'claude', label: 'Run Claude Code', command: 'claude', icon: <MessageSquare size={14} /> },
+    { id: 'cursor', label: 'Run Cursor Agent', command: 'cursor-agent', icon: <MousePointer2 size={14} /> },
+  ];
 
   return (
     <div className="h-[40px] flex items-center justify-between px-3 border-b border-forge-border select-none flex-shrink-0">
@@ -215,13 +230,25 @@ function TopBar() {
           </div>
         )}
       </div>
-      <button
-        onClick={() => setApiKeyModalOpen(true)}
-        title="Añadir / cambiar clave de API"
-        className="h-7 w-7 rounded flex items-center justify-center text-forge-text hover:text-forge-text-strong hover:bg-white/5"
-      >
-        <Plus size={16} />
-      </button>
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {agentButtons.map((agent) => (
+          <button
+            key={agent.id}
+            onClick={() => runCommandInTerminal(agent.command)}
+            title={agent.label}
+            className="h-7 w-7 rounded flex items-center justify-center text-forge-text hover:text-forge-accent hover:bg-forge-accent/10 transition-colors"
+          >
+            {agent.icon}
+          </button>
+        ))}
+        <button
+          onClick={() => setApiKeyModalOpen(true)}
+          title="Añadir / cambiar clave de API"
+          className="h-7 w-7 rounded flex items-center justify-center text-forge-text hover:text-forge-text-strong hover:bg-white/5"
+        >
+          <Plus size={16} />
+        </button>
+      </div>
     </div>
   );
 }

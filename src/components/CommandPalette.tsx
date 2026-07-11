@@ -14,6 +14,7 @@ export default function CommandPalette() {
   const saveFile = useStore((s) => s.saveFile);
   const setSidebarPanel = useStore((s) => s.setSidebarPanel);
   const installVsixExtension = useStore((s) => s.installVsixExtension);
+  const installExtensionById = useStore((s) => s.installExtensionById);
   const setColorTheme = useStore((s) => s.setColorTheme);
   const installedExtensions = useStore((s) => s.installedExtensions);
 
@@ -45,9 +46,31 @@ export default function CommandPalette() {
   );
 
   const filtered = useMemo(() => {
+    // VSCode-style quick install: `ext install publisher.name` downloads the
+    // extension from Open VSX. Matches while typing so the entry is visible
+    // as soon as `ext install ` is written.
+    const extInstall = query.trim().match(/^ext\s+install(?:\s+(\S*))?$/i);
+    if (extInstall) {
+      const id = extInstall[1] ?? '';
+      return [
+        {
+          id: 'ext-install-openvsx',
+          label: id
+            ? `Extensions: Install '${id}' from Open VSX`
+            : 'Extensions: Install from Open VSX — escribe publisher.nombre',
+          action: () => {
+            if (!id) return;
+            void installExtensionById(id);
+            close();
+          },
+        },
+      ];
+    }
+
     if (!query.trim()) return commands;
     const lower = query.toLowerCase();
     return commands.filter((cmd) => cmd.label.toLowerCase().includes(lower));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, commands]);
 
   useEffect(() => { setSelectedIndex(0); }, [query]);

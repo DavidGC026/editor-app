@@ -13,6 +13,9 @@ import {
   PendingDiff,
   ProviderId,
   InstalledExtension,
+  MarketplaceSearchResult,
+  GitChange,
+  Problem,
 } from './types';
 import { lspClient } from './lsp/client';
 import { applyExtensions, isThemeAvailable } from './extensions/registry';
@@ -40,6 +43,9 @@ export interface OpenFilePathOptions {
   endText?: string;
   selectToEndOfLine?: boolean;
   makeFrontmost?: boolean;
+  /** 1-based line to reveal and select (search results, git jumps). Takes
+   *  precedence over startText/endText. */
+  line?: number;
 }
 
 interface EditorState {
@@ -71,6 +77,8 @@ interface EditorState {
   // Terminal
   /** Id of the currently-mounted pty (set by BottomPanel/XTermView). */
   activeTerminalId: string | null;
+  /** Command waiting for the integrated terminal to mount. */
+  pendingTerminalCommand: string | null;
 
   // Editor state
   cursorPosition: CursorPosition;
@@ -171,6 +179,28 @@ interface EditorState {
     patch: Partial<LiveWrite>,
   ) => void;
 
+  // ── Quick Open (Ctrl+P) ─────────────────────────────────────────────
+  quickOpenOpen: boolean;
+  setQuickOpenOpen: (open: boolean) => void;
+
+  // ── Git (Source Control) ────────────────────────────────────────────
+  gitIsRepo: boolean;
+  gitBranch: string | null;
+  gitChanges: GitChange[];
+  /** True while a stage/unstage/commit operation is in flight. */
+  gitBusy: boolean;
+  gitError: string | null;
+  refreshGitStatus: () => Promise<void>;
+  gitStageFiles: (relPaths: string[]) => Promise<void>;
+  gitUnstageFiles: (relPaths: string[]) => Promise<void>;
+  /** Commits staged changes. Resolves true on success. */
+  gitCommitChanges: (message: string) => Promise<boolean>;
+
+  // ── Problems (LSP diagnostics) ──────────────────────────────────────
+  problems: Problem[];
+  updateProblemsForFile: (filePath: string, problems: Problem[]) => void;
+  clearProblems: () => void;
+
   // ── Extensions (VSIX: themes + snippets) ────────────────────────────
   /** Extensions installed from .vsix files (themes + snippets only). */
   installedExtensions: InstalledExtension[];
@@ -179,9 +209,21 @@ interface EditorState {
   /** Load the installed-extension list from the main process and wire the
    *  themes/snippets into Monaco. Called once on startup. */
   refreshExtensions: () => Promise<void>;
+  /** True while a VSIX is being installed (file picker or Open VSX). */
+  extBusy: boolean;
+  /** Last install error, shown in the Extensions panel. */
+  extError: string | null;
+  /** Marketplace search state backed by Open VSX. */
+  marketplaceResults: MarketplaceSearchResult;
+  marketplaceBusy: boolean;
+  marketplaceError: string | null;
+  searchMarketplace: (query: string, size?: number) => Promise<void>;
   /** Open the VSIX picker and install. Resolves with an error message to
    *  show, or null on success/cancel. */
   installVsixExtension: () => Promise<string | null>;
+  /** Download `publisher.name` from Open VSX and install it. Shows the
+   *  Extensions panel so progress/errors are visible. */
+  installExtensionById: (extensionId: string) => Promise<string | null>;
   uninstallExtension: (id: string) => Promise<void>;
   setColorTheme: (themeId: string) => Promise<void>;
 
@@ -218,6 +260,7 @@ interface EditorState {
   setSidebarWidth: (width: number) => void;
   setBottomPanelHeight: (height: number) => void;
   setActiveTerminalId: (id: string | null) => void;
+  runCommandInTerminal: (command: string) => void;
   /** Send `cd "<path>"` (newline-appended) to the currently-active pty. */
   sendCdToActiveTerminal: (workspacePath: string) => void;
   setCursorPosition: (pos: CursorPosition) => void;
@@ -260,6 +303,74 @@ function joinPath(parent: string, name: string): string {
   return parent.endsWith(sep) ? `${parent}${name}` : `${parent}${sep}${name}`;
 }
 
+/** ipcRenderer.invoke wraps thrown errors as
+ *  "Error invoking remote method 'x': Error: <real message>" — unwrap it. */
+function cleanIpcError(message: string): string {
+  return message.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeMarketplaceExtension(raw: any) {
+  const namespace = typeof raw?.namespace === 'string' ? raw.namespace : '';
+  const name = typeof raw?.name === 'string' ? raw.name : '';
+  if (!namespace || !name) return null;
+
+  return {
+    id: `${namespace}.${name}`.toLowerCase(),
+    namespace,
+    name,
+    displayName:
+      typeof raw.displayName === 'string' && raw.displayName.trim()
+        ? raw.displayName
+        : name,
+    description: typeof raw.description === 'string' ? raw.description : '',
+    version: typeof raw.version === 'string' ? raw.version : '',
+    iconUrl: typeof raw?.files?.icon === 'string' ? raw.files.icon : null,
+    downloadCount: asNumber(raw.downloadCount),
+    averageRating:
+      typeof raw.averageRating === 'number' && Number.isFinite(raw.averageRating)
+        ? raw.averageRating
+        : null,
+    reviewCount: asNumber(raw.reviewCount),
+    verified: Boolean(raw.verified),
+    deprecated: Boolean(raw.deprecated),
+    lastUpdated: typeof raw.timestamp === 'string' ? raw.timestamp : null,
+  };
+}
+
+async function searchOpenVsxFromRenderer(
+  query: string,
+  size: number,
+): Promise<MarketplaceSearchResult> {
+  const url = new URL('https://open-vsx.org/api/-/search');
+  const cleanQuery = query.trim();
+  if (cleanQuery) url.searchParams.set('query', cleanQuery);
+  url.searchParams.set('size', String(Math.max(1, Math.min(50, Math.round(size)))));
+  url.searchParams.set('sortBy', 'relevance');
+  url.searchParams.set('sortOrder', 'desc');
+
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    throw new Error(`Open VSX respondió ${res.status} al buscar extensiones.`);
+  }
+  const data = await res.json();
+  const extensions = Array.isArray(data?.extensions)
+    ? data.extensions
+        .map(normalizeMarketplaceExtension)
+        .filter((
+          ext: ReturnType<typeof normalizeMarketplaceExtension>,
+        ): ext is NonNullable<ReturnType<typeof normalizeMarketplaceExtension>> => Boolean(ext))
+    : [];
+
+  return {
+    total: asNumber(data?.totalSize, extensions.length),
+    extensions,
+  };
+}
+
 function dirname(p: string): string {
   const sep = p.includes('\\') && !p.includes('/') ? '\\' : '/';
   const idx = p.lastIndexOf(sep);
@@ -300,6 +411,18 @@ function findTextReveal(
   content: string,
   options?: OpenFilePathOptions,
 ): EditorRevealRequest['selection'] | undefined {
+  if (options?.line && options.line > 0) {
+    const lines = content.split('\n');
+    const lineNumber = Math.min(options.line, lines.length);
+    const lineText = lines[lineNumber - 1] ?? '';
+    return {
+      startLineNumber: lineNumber,
+      startColumn: 1,
+      endLineNumber: lineNumber,
+      endColumn: lineText.length + 1,
+    };
+  }
+
   const startText = options?.startText;
   const endText = options?.endText;
   if (!startText && !endText) return undefined;
@@ -352,6 +475,7 @@ export const useStore = create<EditorState>((set, get) => ({
   sidebarWidth: 250,
   bottomPanelHeight: 260,
   activeTerminalId: null,
+  pendingTerminalCommand: null,
   cursorPosition: { line: 1, column: 1 },
   commandPaletteOpen: false,
   editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
@@ -382,9 +506,111 @@ export const useStore = create<EditorState>((set, get) => ({
   // Agent streaming initial state
   agentStreamingPaths: new Set<string>(),
 
+  // Quick Open initial state
+  quickOpenOpen: false,
+
+  // Git initial state
+  gitIsRepo: false,
+  gitBranch: null,
+  gitChanges: [],
+  gitBusy: false,
+  gitError: null,
+  problems: [],
+
   // Extensions initial state
   installedExtensions: [],
   activeTheme: 'forge-dark',
+  extBusy: false,
+  extError: null,
+  marketplaceResults: { total: 0, extensions: [] },
+  marketplaceBusy: false,
+  marketplaceError: null,
+
+  // ── Quick Open actions ──────────────────────────────────────────────
+  setQuickOpenOpen: (open: boolean) => {
+    set({ quickOpenOpen: open });
+  },
+
+  // ── Git actions ─────────────────────────────────────────────────────
+  refreshGitStatus: async () => {
+    const { workspacePath } = get();
+    if (!workspacePath || !window.electronAPI?.git) {
+      set({ gitIsRepo: false, gitBranch: null, gitChanges: [] });
+      return;
+    }
+    try {
+      const status = await window.electronAPI.git.status(workspacePath);
+      set({
+        gitIsRepo: status.isRepo,
+        gitBranch: status.branch,
+        gitChanges: status.changes,
+      });
+    } catch (err) {
+      console.warn('[forge] git status failed:', (err as Error).message);
+      set({ gitIsRepo: false, gitBranch: null, gitChanges: [] });
+    }
+  },
+
+  gitStageFiles: async (relPaths: string[]) => {
+    const { workspacePath } = get();
+    if (!workspacePath || relPaths.length === 0) return;
+    set({ gitBusy: true, gitError: null });
+    try {
+      await window.electronAPI.git.stage(workspacePath, relPaths);
+    } catch (err) {
+      set({ gitError: cleanIpcError((err as Error).message) });
+    } finally {
+      set({ gitBusy: false });
+      await get().refreshGitStatus();
+    }
+  },
+
+  gitUnstageFiles: async (relPaths: string[]) => {
+    const { workspacePath } = get();
+    if (!workspacePath || relPaths.length === 0) return;
+    set({ gitBusy: true, gitError: null });
+    try {
+      await window.electronAPI.git.unstage(workspacePath, relPaths);
+    } catch (err) {
+      set({ gitError: cleanIpcError((err as Error).message) });
+    } finally {
+      set({ gitBusy: false });
+      await get().refreshGitStatus();
+    }
+  },
+
+  gitCommitChanges: async (message: string) => {
+    const { workspacePath } = get();
+    if (!workspacePath) return false;
+    set({ gitBusy: true, gitError: null });
+    try {
+      await window.electronAPI.git.commit(workspacePath, message);
+      return true;
+    } catch (err) {
+      set({ gitError: cleanIpcError((err as Error).message) });
+      return false;
+    } finally {
+      set({ gitBusy: false });
+      await get().refreshGitStatus();
+    }
+  },
+
+  updateProblemsForFile: (filePath: string, problems: Problem[]) => {
+    set((state) => ({
+      problems: [
+        ...state.problems.filter((p) => p.filePath !== filePath),
+        ...problems,
+      ].sort((a, b) => (
+        a.filePath.localeCompare(b.filePath) ||
+        a.startLine - b.startLine ||
+        a.startColumn - b.startColumn
+      )),
+    }));
+  },
+
+  clearProblems: () => {
+    set({ problems: [] });
+  },
 
   // ── Extension actions ───────────────────────────────────────────────
   refreshExtensions: async () => {
@@ -406,7 +632,11 @@ export const useStore = create<EditorState>((set, get) => ({
   },
 
   installVsixExtension: async () => {
+    set({ extBusy: true, extError: null });
     try {
+      if (!window.electronAPI?.ext?.installVsix) {
+        throw new Error('La instalación de VSIX requiere abrir Forge como app de Electron.');
+      }
       const installed = await window.electronAPI.ext.installVsix();
       if (!installed) return null; // dialog cancelled
       await get().refreshExtensions();
@@ -418,7 +648,40 @@ export const useStore = create<EditorState>((set, get) => ({
       }
       return null;
     } catch (err) {
-      return (err as Error).message || 'No se pudo instalar la extensión.';
+      const message = cleanIpcError((err as Error).message || 'No se pudo instalar la extensión.');
+      set({ extError: message });
+      return message;
+    } finally {
+      set({ extBusy: false });
+    }
+  },
+
+  installExtensionById: async (extensionId: string) => {
+    // Make the Extensions panel visible so the spinner / error has a home —
+    // this action is usually triggered from the command palette.
+    set({
+      activeSidebarPanel: 'extensions',
+      sidebarVisible: true,
+      extBusy: true,
+      extError: null,
+    });
+    try {
+      if (!window.electronAPI?.ext?.installFromOpenVsx) {
+        throw new Error('La instalación desde Marketplace requiere abrir Forge como app de Electron.');
+      }
+      const installed = await window.electronAPI.ext.installFromOpenVsx(extensionId);
+      await get().refreshExtensions();
+      const firstTheme = installed.themes[0];
+      if (firstTheme) {
+        await get().setColorTheme(firstTheme.id);
+      }
+      return null;
+    } catch (err) {
+      const message = cleanIpcError((err as Error).message || 'No se pudo instalar la extensión.');
+      set({ extError: message });
+      return message;
+    } finally {
+      set({ extBusy: false });
     }
   },
 
@@ -438,6 +701,23 @@ export const useStore = create<EditorState>((set, get) => ({
       await window.electronAPI.ext.setActiveTheme(safeId === 'forge-dark' ? null : safeId);
     } catch {
       /* persisting the choice is best-effort */
+    }
+  },
+
+  searchMarketplace: async (query: string, size = 20) => {
+    set({ marketplaceBusy: true, marketplaceError: null, extError: null });
+    try {
+      const results = window.electronAPI?.ext?.searchOpenVsx
+        ? await window.electronAPI.ext.searchOpenVsx(query, size)
+        : await searchOpenVsxFromRenderer(query, size);
+      set({ marketplaceResults: results });
+    } catch (err) {
+      set({
+        marketplaceError: cleanIpcError((err as Error).message || 'No se pudo buscar en Open VSX.'),
+        marketplaceResults: { total: 0, extensions: [] },
+      });
+    } finally {
+      set({ marketplaceBusy: false });
     }
   },
 
@@ -830,6 +1110,9 @@ export const useStore = create<EditorState>((set, get) => ({
         console.error('Failed to start workspace watcher:', err);
       }
 
+      // Populate the Source Control panel / status-bar branch label.
+      void get().refreshGitStatus();
+
       // Spawn typescript-language-server for the new workspace. The LSP
       // client handles restarts (stops the previous server first) and
       // gracefully degrades if the binary isn't installed.
@@ -895,6 +1178,9 @@ export const useStore = create<EditorState>((set, get) => ({
         pending = null;
         // Use the latest workspace path at fire time.
         get().refreshFileTree();
+        // Keep the Source Control panel / status bar branch in sync with
+        // external edits (git status is cheap and already double-debounced).
+        void get().refreshGitStatus();
       }, 60);
     };
 
@@ -1169,6 +1455,12 @@ export const useStore = create<EditorState>((set, get) => ({
       openTabs: [],
       activeTabId: null,
       pendingEditorReveal: null,
+      // Reset Source Control state.
+      gitIsRepo: false,
+      gitBranch: null,
+      gitChanges: [],
+      gitError: null,
+      problems: [],
       // Reset AI conversation when a workspace closes.
       aiInitDone: false,
       aiMessages: [],
@@ -1213,7 +1505,44 @@ export const useStore = create<EditorState>((set, get) => ({
   },
 
   setActiveTerminalId: (id: string | null) => {
+    const pending = get().pendingTerminalCommand;
     set({ activeTerminalId: id });
+    if (id && pending && window.electronAPI?.terminalWrite) {
+      set({ pendingTerminalCommand: null });
+      window.setTimeout(() => {
+        try {
+          window.electronAPI.terminalWrite(id, pending.endsWith('\r') ? pending : `${pending}\r`);
+        } catch (err) {
+          console.debug('[forge] terminalWrite (pending command) failed:', (err as Error)?.message);
+        }
+      }, 120);
+    }
+  },
+
+  runCommandInTerminal: (command: string) => {
+    const trimmed = command.trim();
+    if (!trimmed) return;
+    set({
+      bottomPanelVisible: true,
+      activeBottomTab: 'terminal',
+    });
+
+    const state = get();
+    const escapedWorkspace = state.workspacePath?.replace(/"/g, '\\"');
+    const fullCommand = escapedWorkspace
+      ? ` cd "${escapedWorkspace}" && ${trimmed}\r`
+      : ` ${trimmed}\r`;
+
+    if (state.activeTerminalId && window.electronAPI?.terminalWrite) {
+      try {
+        window.electronAPI.terminalWrite(state.activeTerminalId, fullCommand);
+        return;
+      } catch (err) {
+        console.debug('[forge] terminalWrite (run command) failed:', (err as Error)?.message);
+      }
+    }
+
+    set({ pendingTerminalCommand: fullCommand });
   },
 
   sendCdToActiveTerminal: (workspacePath: string) => {

@@ -11,6 +11,11 @@ export default function StatusBar() {
   const liveServerPort = useStore((s) => s.liveServerPort);
   const liveServerUrl = useStore((s) => s.liveServerUrl);
   const toggleLiveServer = useStore((s) => s.toggleLiveServer);
+  const gitIsRepo = useStore((s) => s.gitIsRepo);
+  const gitBranch = useStore((s) => s.gitBranch);
+  const gitChanges = useStore((s) => s.gitChanges);
+  const setSidebarPanel = useStore((s) => s.setSidebarPanel);
+  const problems = useStore((s) => s.problems);
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
   const languageLabel = activeTab?.language || 'Plain Text';
@@ -22,6 +27,8 @@ export default function StatusBar() {
   const liveServerTitle = liveServerActive
     ? `Live Server activo en ${liveServerUrl || `http://localhost:${liveServerPort}`} — clic para detener`
     : 'Live Server inactivo — clic para iniciar (requiere archivo HTML)';
+  const errorCount = problems.filter((p) => p.severity === 1).length;
+  const warningCount = problems.filter((p) => p.severity === 2).length;
 
   return (
     <div
@@ -30,21 +37,29 @@ export default function StatusBar() {
     >
       {/* Left */}
       <div className="flex items-center gap-3">
-        {workspacePath && (
-          <div className="flex items-center gap-1 hover:text-forge-text-strong transition-colors cursor-default">
+        {workspacePath && gitIsRepo && (
+          <button
+            onClick={() => setSidebarPanel('git')}
+            title={`${gitChanges.length} Git change${gitChanges.length === 1 ? '' : 's'}`}
+            className="flex items-center gap-1 hover:text-forge-text-strong transition-colors px-1 rounded"
+          >
             <GitBranch size={12} />
-            <span>main</span>
-          </div>
+            <span>{gitBranch || 'HEAD'}</span>
+            {gitChanges.length > 0 && <span className="text-forge-text/60">*{gitChanges.length}</span>}
+          </button>
         )}
 
         <button
-          onClick={togglePanel}
+          onClick={() => {
+            togglePanel();
+            useStore.getState().setBottomTab('problems');
+          }}
           className="flex items-center gap-1 hover:text-forge-text-strong px-1 rounded transition-colors"
         >
           <AlertCircle size={12} />
-          <span>0</span>
+          <span>{errorCount}</span>
           <CheckCircle2 size={12} className="ml-1" />
-          <span>0</span>
+          <span>{warningCount}</span>
         </button>
 
         <button
