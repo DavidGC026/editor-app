@@ -450,6 +450,8 @@ export interface ElectronAPI {
   terminalOnExit: (id: string, callback: (code: number) => void) => TerminalDisposable;
   // Clipboard
   readClipboard: () => Promise<string>;
+  /** Reveal a file/folder in the OS file manager. */
+  revealInFolder: (targetPath: string) => Promise<boolean>;
   // ── Live Server (built-in HTTP server, port 5500) ───────────────────
   liveServer: {
     /** Starts a static HTTP server rooted at the directory of the given
@@ -536,6 +538,10 @@ export interface ElectronAPI {
     push: (workspacePath: string) => Promise<string>;
     /** Pull --ff-only from the upstream. */
     pull: (workspacePath: string) => Promise<string>;
+    /** Diff of pending changes (staged first, else working tree) as LLM input. */
+    diffSummary: (workspacePath: string) => Promise<{ staged: boolean; text: string }>;
+    /** Discard local changes (restore from HEAD / remove untracked). */
+    discard: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
     diff: (workspacePath: string, relPath: string, staged?: boolean) => Promise<string>;
     fileVersions: (
       workspacePath: string,

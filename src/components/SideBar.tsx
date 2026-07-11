@@ -37,7 +37,9 @@ import {
   ArrowUp,
   ArrowDown,
   UploadCloud,
+  Sparkles,
 } from 'lucide-react';
+import { generateCommitMessage } from '../ai/quickActions';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -190,6 +192,9 @@ function ContextMenu({
   onDelete,
   onNewFile,
   onNewFolder,
+  onCopyPath,
+  onCopyRelativePath,
+  onRevealInFolder,
   onLiveServerToggle,
   liveServerActive,
   liveServerHtmlPath,
@@ -200,6 +205,9 @@ function ContextMenu({
   onDelete: () => void;
   onNewFile: () => void;
   onNewFolder: () => void;
+  onCopyPath: () => void;
+  onCopyRelativePath: () => void;
+  onRevealInFolder: () => void;
   /** Optional handler that toggles the live server on this HTML file. */
   onLiveServerToggle: () => void;
   /** Current live-server state — used to decide between "Iniciar" / "Detener". */
@@ -266,6 +274,10 @@ function ContextMenu({
       )}
       <div className="context-menu-item" onClick={() => { onNewFile(); onClose(); }}>New File</div>
       <div className="context-menu-item" onClick={() => { onNewFolder(); onClose(); }}>New Folder</div>
+      <div className="context-menu-divider" />
+      <div className="context-menu-item" onClick={() => { onCopyPath(); onClose(); }}>Copy Path</div>
+      <div className="context-menu-item" onClick={() => { onCopyRelativePath(); onClose(); }}>Copy Relative Path</div>
+      <div className="context-menu-item" onClick={() => { onRevealInFolder(); onClose(); }}>Reveal in File Manager</div>
       <div className="context-menu-divider" />
       <div className="context-menu-item" onClick={() => { onRename(); onClose(); }}>Rename</div>
       <div className="context-menu-item" onClick={() => { onDelete(); onClose(); }}>Delete</div>
@@ -855,6 +867,24 @@ function ExplorerPanel() {
     setRenameNodeId(ctxMenu.node.id);
   }, [ctxMenu]);
 
+  const handleCtxCopyPath = useCallback(() => {
+    if (!ctxMenu) return;
+    void navigator.clipboard.writeText(ctxMenu.node.path);
+  }, [ctxMenu]);
+
+  const handleCtxCopyRelativePath = useCallback(() => {
+    if (!ctxMenu || !workspacePath) return;
+    const norm = ctxMenu.node.path.replace(/\\/g, '/');
+    const ws = workspacePath.replace(/\\/g, '/');
+    const rel = norm.startsWith(ws + '/') ? norm.slice(ws.length + 1) : ctxMenu.node.path;
+    void navigator.clipboard.writeText(rel);
+  }, [ctxMenu, workspacePath]);
+
+  const handleCtxRevealInFolder = useCallback(() => {
+    if (!ctxMenu) return;
+    void window.electronAPI.revealInFolder(ctxMenu.node.path);
+  }, [ctxMenu]);
+
   const handleCtxDelete = useCallback(async () => {
     if (!ctxMenu) return;
     if (confirm(`Delete "${ctxMenu.node.name}"?`)) {
@@ -975,6 +1005,9 @@ function ExplorerPanel() {
           onDelete={handleCtxDelete}
           onNewFile={handleCtxNewFile}
           onNewFolder={handleCtxNewFolder}
+          onCopyPath={handleCtxCopyPath}
+          onCopyRelativePath={handleCtxCopyRelativePath}
+          onRevealInFolder={handleCtxRevealInFolder}
           onLiveServerToggle={handleCtxLiveServerToggle}
           liveServerActive={liveServerActive}
           liveServerHtmlPath={liveServerHtmlPath}
@@ -1217,6 +1250,7 @@ function SourceControlPanel() {
   const gitStageFiles = useStore((s) => s.gitStageFiles);
   const gitUnstageFiles = useStore((s) => s.gitUnstageFiles);
   const gitCommitChanges = useStore((s) => s.gitCommitChanges);
+  const gitDiscardFiles = useStore((s) => s.gitDiscardFiles);
   const gitPushChanges = useStore((s) => s.gitPushChanges);
   const gitPullChanges = useStore((s) => s.gitPullChanges);
   const openFilePath = useStore((s) => s.openFilePath);
@@ -1225,6 +1259,8 @@ function SourceControlPanel() {
   const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
 
   const [message, setMessage] = useState('');
+  const [aiMsgBusy, setAiMsgBusy] = useState(false);
+  const [aiMsgError, setAiMsgError] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshGitStatus();
@@ -1254,6 +1290,19 @@ function SourceControlPanel() {
     }
     const ok = await gitCommitChanges(message.trim());
     if (ok) setMessage('');
+  };
+
+  const generateMessage = async () => {
+    if (aiMsgBusy || gitChanges.length === 0) return;
+    setAiMsgBusy(true);
+    setAiMsgError(null);
+    try {
+      setMessage(await generateCommitMessage());
+    } catch (err) {
+      setAiMsgError((err as Error).message);
+    } finally {
+      setAiMsgBusy(false);
+    }
   };
 
   const push = async () => {
@@ -1293,14 +1342,28 @@ function SourceControlPanel() {
         <FileCode2 size={14} />
       </button>
       {mode === 'unstaged' ? (
-        <button
-          onClick={() => void gitStageFiles([change.relPath])}
-          disabled={gitBusy}
-          title="Stage"
-          className="opacity-0 group-hover:opacity-100 text-forge-text hover:text-forge-accent disabled:opacity-30"
-        >
-          <PlusCircle size={14} />
-        </button>
+        <>
+          <button
+            onClick={() => {
+              if (confirm(`¿Descartar los cambios de "${change.relPath}"? Esta acción no se puede deshacer.`)) {
+                void gitDiscardFiles([change.relPath]);
+              }
+            }}
+            disabled={gitBusy}
+            title="Discard Changes"
+            className="opacity-0 group-hover:opacity-100 text-forge-text hover:text-red-400 disabled:opacity-30"
+          >
+            <RotateCcw size={14} />
+          </button>
+          <button
+            onClick={() => void gitStageFiles([change.relPath])}
+            disabled={gitBusy}
+            title="Stage"
+            className="opacity-0 group-hover:opacity-100 text-forge-text hover:text-forge-accent disabled:opacity-30"
+          >
+            <PlusCircle size={14} />
+          </button>
+        </>
       ) : (
         <button
           onClick={() => void gitUnstageFiles([change.relPath])}
@@ -1407,18 +1470,35 @@ function SourceControlPanel() {
           <span className="text-forge-text/35">·</span>
           <span className="text-forge-text/50">{gitChanges.length} changes</span>
         </div>
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder="Message (Ctrl+Enter to commit)"
-          onKeyDown={(e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-              e.preventDefault();
-              void commit();
-            }
-          }}
-          className="w-full h-[64px] resize-none bg-forge-input text-forge-text text-[12px] px-2 py-1.5 rounded outline-none border border-transparent focus:border-forge-accent/60"
-        />
+        <div className="relative">
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="Message (Ctrl+Enter to commit)"
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                void commit();
+              }
+            }}
+            className="w-full h-[64px] resize-none bg-forge-input text-forge-text text-[12px] pl-2 pr-7 py-1.5 rounded outline-none border border-transparent focus:border-forge-accent/60"
+          />
+          <button
+            onClick={() => void generateMessage()}
+            disabled={aiMsgBusy || gitChanges.length === 0}
+            title="Generar mensaje de commit con IA"
+            className="absolute top-1.5 right-1.5 text-forge-text/50 hover:text-forge-accent disabled:opacity-30"
+          >
+            {aiMsgBusy ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Sparkles size={14} />
+            )}
+          </button>
+        </div>
+        {aiMsgError && (
+          <p className="mt-1 text-[11px] leading-snug text-red-400/90">{aiMsgError}</p>
+        )}
         <button
           onClick={() => void commit()}
           disabled={!canCommit}
@@ -1479,14 +1559,28 @@ function SourceControlPanel() {
               <div className="mb-3">
                 <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
                   <span>Changes ({unstaged.length})</span>
-                  <button
-                    onClick={() => void gitStageFiles(unstaged.map((c) => c.relPath))}
-                    disabled={gitBusy}
-                    title="Stage All"
-                    className="text-forge-text hover:text-forge-accent disabled:opacity-30"
-                  >
-                    <PlusCircle size={13} />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        if (confirm(`¿Descartar los cambios de ${unstaged.length} archivo(s)? Esta acción no se puede deshacer.`)) {
+                          void gitDiscardFiles(unstaged.map((c) => c.relPath));
+                        }
+                      }}
+                      disabled={gitBusy}
+                      title="Discard All Changes"
+                      className="text-forge-text hover:text-red-400 disabled:opacity-30"
+                    >
+                      <RotateCcw size={13} />
+                    </button>
+                    <button
+                      onClick={() => void gitStageFiles(unstaged.map((c) => c.relPath))}
+                      disabled={gitBusy}
+                      title="Stage All"
+                      className="text-forge-text hover:text-forge-accent disabled:opacity-30"
+                    >
+                      <PlusCircle size={13} />
+                    </button>
+                  </div>
                 </div>
                 {unstaged.map((change) => renderChange(change, 'unstaged'))}
               </div>

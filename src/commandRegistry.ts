@@ -1,5 +1,7 @@
 import type { Command, GitChange, Tab } from './types';
 import { isHtmlFile, isImageFile } from './types';
+import { runEditorAIAction, type EditorAIActionKind } from './ai/quickActions';
+import { useStore } from './store';
 
 export interface CommandBuildContext {
   activeTab?: Tab;
@@ -224,6 +226,144 @@ export function buildCommands(ctx: CommandBuildContext): Command[] {
   }
 
   if (activeTab && !isImageFile(activeTab.path) && !activeTab.gitDiff) {
+    const monaco = (actionId: string) => () => {
+      void useStore.getState().runEditorAction?.(actionId);
+    };
+    commands.push(
+      withCategory('Go to Line/Column…', 'Editor', {
+        id: 'editor-goto-line',
+        shortcut: 'Ctrl+G',
+        keywords: ['ir a línea', 'jump'],
+        action: wrap(monaco('editor.action.gotoLine')),
+      }),
+      withCategory('Format Document', 'Editor', {
+        id: 'editor-format',
+        shortcut: 'Shift+Alt+F',
+        keywords: ['formatear', 'prettier', 'indent'],
+        action: wrap(monaco('editor.action.formatDocument')),
+      }),
+      withCategory('Toggle Line Comment', 'Editor', {
+        id: 'editor-toggle-comment',
+        shortcut: 'Ctrl+/',
+        keywords: ['comentar', 'comment'],
+        action: wrap(monaco('editor.action.commentLine')),
+      }),
+      withCategory('Duplicate Line Down', 'Editor', {
+        id: 'editor-duplicate-line',
+        shortcut: 'Shift+Alt+↓',
+        keywords: ['duplicar línea', 'copy line'],
+        action: wrap(monaco('editor.action.copyLinesDownAction')),
+      }),
+      withCategory('Delete Line', 'Editor', {
+        id: 'editor-delete-line',
+        shortcut: 'Ctrl+Shift+K',
+        keywords: ['borrar línea'],
+        action: wrap(monaco('editor.action.deleteLines')),
+      }),
+      withCategory('Rename Symbol', 'Editor', {
+        id: 'editor-rename-symbol',
+        shortcut: 'F2',
+        keywords: ['renombrar símbolo', 'refactor'],
+        action: wrap(monaco('editor.action.rename')),
+      }),
+      withCategory('Change All Occurrences', 'Editor', {
+        id: 'editor-change-occurrences',
+        shortcut: 'Ctrl+F2',
+        keywords: ['ocurrencias', 'multi cursor'],
+        action: wrap(monaco('editor.action.changeAll')),
+      }),
+      withCategory('Fold All', 'Editor', {
+        id: 'editor-fold-all',
+        keywords: ['plegar', 'collapse'],
+        action: wrap(monaco('editor.foldAll')),
+      }),
+      withCategory('Unfold All', 'Editor', {
+        id: 'editor-unfold-all',
+        keywords: ['desplegar', 'expand'],
+        action: wrap(monaco('editor.unfoldAll')),
+      }),
+    );
+  }
+
+  if (ctx.activeTab) {
+    commands.push(
+      withCategory('Close Active Tab', 'File', {
+        id: 'tab-close',
+        shortcut: 'Ctrl+W',
+        keywords: ['cerrar pestaña'],
+        action: wrap(() => {
+          const s = useStore.getState();
+          if (s.activeTabId) s.closeTab(s.activeTabId);
+        }),
+      }),
+      withCategory('Close Other Tabs', 'File', {
+        id: 'tab-close-others',
+        action: wrap(() => {
+          const s = useStore.getState();
+          if (s.activeTabId) s.closeOtherTabs(s.activeTabId);
+        }),
+      }),
+      withCategory('Close All Tabs', 'File', {
+        id: 'tab-close-all',
+        action: wrap(() => useStore.getState().closeAllTabs()),
+      }),
+      withCategory('Copy Path of Active File', 'File', {
+        id: 'copy-active-path',
+        keywords: ['ruta', 'path'],
+        action: wrap(() => {
+          const tab = ctx.activeTab;
+          if (tab && !tab.gitDiff) void navigator.clipboard.writeText(tab.path);
+        }),
+      }),
+      withCategory('Reveal Active File in File Manager', 'File', {
+        id: 'reveal-active-file',
+        keywords: ['explorador', 'carpeta', 'folder'],
+        action: wrap(() => {
+          const tab = ctx.activeTab;
+          if (tab && !tab.gitDiff) void window.electronAPI.revealInFolder(tab.path);
+        }),
+      }),
+    );
+  }
+
+  if (activeTab && !isImageFile(activeTab.path) && !activeTab.gitDiff) {
+    const aiOnActiveFile = (kind: EditorAIActionKind) => () => {
+      void runEditorAIAction(
+        kind,
+        {
+          relPath: workspacePath ? relPath(workspacePath, activeTab.path) : activeTab.name,
+          language: activeTab.language || 'plaintext',
+          code: activeTab.content,
+          wholeFile: true,
+        },
+        activeTab.path,
+      );
+    };
+    commands.push(
+      withCategory('IA: Explicar archivo actual', 'AI', {
+        id: 'ai-explain-file',
+        keywords: ['explain', 'explicar', 'entender'],
+        action: wrap(aiOnActiveFile('explain')),
+      }),
+      withCategory('IA: Refactorizar archivo actual', 'AI', {
+        id: 'ai-refactor-file',
+        keywords: ['refactor', 'mejorar', 'limpiar'],
+        action: wrap(aiOnActiveFile('refactor')),
+      }),
+      withCategory('IA: Documentar archivo actual', 'AI', {
+        id: 'ai-document-file',
+        keywords: ['document', 'comentarios', 'jsdoc'],
+        action: wrap(aiOnActiveFile('document')),
+      }),
+      withCategory('IA: Corregir con diagnósticos', 'AI', {
+        id: 'ai-fix-file',
+        keywords: ['fix', 'errores', 'problems', 'diagnostics'],
+        action: wrap(aiOnActiveFile('fix')),
+      }),
+    );
+  }
+
+  if (activeTab && !isImageFile(activeTab.path) && !activeTab.gitDiff) {
     commands.unshift(withCategory('Save Active File', 'File', {
       id: 'ctx-save-active',
       shortcut: 'Ctrl+S',
@@ -239,6 +379,7 @@ export function categoryOrder(category: string): number {
     'Recently Used',
     'Git',
     'File',
+    'Editor',
     'View',
     'Terminal',
     'Run',

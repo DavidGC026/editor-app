@@ -71,6 +71,7 @@ export interface ElectronAPI {
   terminalOnExit: (id: string, callback: (code: number) => void) => { dispose: () => void };
   // Clipboard
   readClipboard: () => Promise<string>;
+  revealInFolder: (targetPath: string) => Promise<boolean>;
   // Live Server (built-in HTTP server on port 5500)
   liveServer: {
     start: (htmlPath: string) => Promise<{
@@ -149,6 +150,8 @@ export interface ElectronAPI {
     commit: (workspacePath: string, message: string) => Promise<string>;
     push: (workspacePath: string) => Promise<string>;
     pull: (workspacePath: string) => Promise<string>;
+    diffSummary: (workspacePath: string) => Promise<{ staged: boolean; text: string }>;
+    discard: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
     diff: (workspacePath: string, relPath: string, staged?: boolean) => Promise<string>;
     fileVersions: (
       workspacePath: string,
@@ -310,6 +313,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('terminal:sendCommand', id, command),
   // Clipboard
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
+  revealInFolder: (targetPath: string) => ipcRenderer.invoke('shell:revealInFolder', targetPath),
   // ── Live Server ───────────────────────────────────────────────────
   liveServer: {
     start: (htmlPath: string) => ipcRenderer.invoke('liveServer:start', htmlPath),
@@ -450,6 +454,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('git:commit', workspacePath, message),
     push: (workspacePath: string) => ipcRenderer.invoke('git:push', workspacePath),
     pull: (workspacePath: string) => ipcRenderer.invoke('git:pull', workspacePath),
+    diffSummary: (workspacePath: string) => ipcRenderer.invoke('git:diffSummary', workspacePath),
+    discard: (workspacePath: string, relPaths: string[]) =>
+      ipcRenderer.invoke('git:discard', workspacePath, relPaths),
     diff: (workspacePath: string, relPath: string, staged?: boolean) =>
       ipcRenderer.invoke('git:diff', workspacePath, relPath, staged),
     fileVersions: (workspacePath: string, relPath: string, staged?: boolean) =>

@@ -450,6 +450,19 @@ export default function App() {
         setQuickOpenOpen(!quickOpenOpen);
         return;
       }
+      // Tab management: Ctrl+W closes the active tab; Ctrl+Tab /
+      // Ctrl+Shift+Tab cycle through open tabs.
+      if (mod && !e.shiftKey && key === 'w') {
+        e.preventDefault();
+        const s = useStore.getState();
+        if (s.activeTabId) s.closeTab(s.activeTabId);
+        return;
+      }
+      if (mod && key === 'tab') {
+        e.preventDefault();
+        useStore.getState().cycleTab(e.shiftKey ? -1 : 1);
+        return;
+      }
       // Zoom: Ctrl+= / Ctrl++ / Ctrl+NumpadAdd zoom in; Ctrl+- zoom out;
       // Ctrl+0 reset. Accept either Ctrl (Win/Linux) or Meta (macOS).
       if (mod && !e.altKey) {

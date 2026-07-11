@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, nativeImage, clipboard, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, nativeImage, clipboard, screen, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -45,6 +45,8 @@ import {
   gitLog,
   gitPush,
   gitPull,
+  gitDiffSummary,
+  gitDiscard,
 } from './git';
 import {
   ClaudeIdeEditorState,
@@ -751,6 +753,13 @@ ipcMain.handle('clipboard:read', () => {
   }
 });
 
+// ── Shell integration ────────────────────────────────────────────────────
+ipcMain.handle('shell:revealInFolder', (_event, targetPath: string) => {
+  if (typeof targetPath !== 'string' || !targetPath) return false;
+  shell.showItemInFolder(targetPath);
+  return true;
+});
+
 // ── Claude Code IDE bridge ───────────────────────────────────────────────
 ipcMain.on('claude:editorStateChanged', (_event, state: ClaudeIdeEditorState) => {
   if (!state || typeof state !== 'object') return;
@@ -1317,6 +1326,17 @@ ipcMain.handle('git:unstage', async (_event, workspacePath: string, relPaths: st
 ipcMain.handle('git:commit', async (_event, workspacePath: string, message: string) => {
   if (!workspacePath || typeof message !== 'string') throw new Error('Argumentos inválidos.');
   return gitCommit(workspacePath, message);
+});
+
+ipcMain.handle('git:discard', async (_event, workspacePath: string, relPaths: string[]) => {
+  if (!workspacePath || !Array.isArray(relPaths)) throw new Error('Argumentos inválidos.');
+  await gitDiscard(workspacePath, relPaths.filter((p) => typeof p === 'string'));
+  return true;
+});
+
+ipcMain.handle('git:diffSummary', async (_event, workspacePath: string) => {
+  if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
+  return gitDiffSummary(workspacePath);
 });
 
 ipcMain.handle('git:push', async (_event, workspacePath: string) => {

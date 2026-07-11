@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Editor, { OnMount, BeforeMount } from '@monaco-editor/react';
 import { useStore } from '../store';
 import {
@@ -27,7 +27,8 @@ import { lspClient, getLspLanguageId } from '../lsp/client';
 import { attachMonaco as attachExtensionMonaco, isThemeAvailable } from '../extensions/registry';
 import ImageViewer from './ImageViewer';
 import GitDiffEditor from './GitDiffEditor';
-import type { TreeNode } from '../types';
+import type { Tab, TreeNode } from '../types';
+import { runEditorAIAction, type EditorAIActionKind } from '../ai/quickActions';
 
 function toFileUri(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');
@@ -381,11 +382,84 @@ function EditorToolbar() {
 // ─────────────────────────────────────────────────────────────────────────
 // Tab Bar — no icons; active text uses the brick accent
 // ─────────────────────────────────────────────────────────────────────────
+function relativizePath(workspacePath: string | null, fullPath: string): string {
+  if (!workspacePath) return fullPath;
+  const norm = fullPath.replace(/\\/g, '/');
+  const ws = workspacePath.replace(/\\/g, '/');
+  return norm.startsWith(ws + '/') ? norm.slice(ws.length + 1) : fullPath;
+}
+
+function TabContextMenu({
+  x,
+  y,
+  tab,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  tab: Tab;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('mousedown', handleDown);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleDown);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [onClose]);
+
+  const item = (label: string, action: () => void) => (
+    <div className="context-menu-item" onClick={() => { action(); onClose(); }}>
+      {label}
+    </div>
+  );
+
+  const { closeTab, closeOtherTabs, closeAllTabs, closeSavedTabs, workspacePath } =
+    useStore.getState();
+  const isRealFile = !tab.gitDiff;
+
+  return (
+    <div
+      ref={ref}
+      className="context-menu fixed z-50"
+      style={{ top: y, left: x }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {item('Close', () => closeTab(tab.id))}
+      {item('Close Others', () => closeOtherTabs(tab.id))}
+      {item('Close Saved', () => closeSavedTabs())}
+      {item('Close All', () => closeAllTabs())}
+      {isRealFile && (
+        <>
+          <div className="context-menu-divider" />
+          {item('Copy Path', () => void navigator.clipboard.writeText(tab.path))}
+          {item('Copy Relative Path', () =>
+            void navigator.clipboard.writeText(relativizePath(workspacePath, tab.path)),
+          )}
+          {item('Reveal in File Manager', () =>
+            void window.electronAPI.revealInFolder(tab.path),
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function TabBar() {
   const openTabs = useStore((s) => s.openTabs);
   const activeTabId = useStore((s) => s.activeTabId);
   const setActiveTab = useStore((s) => s.setActiveTab);
   const closeTab = useStore((s) => s.closeTab);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
 
   if (openTabs.length === 0) return null;
 
@@ -397,6 +471,17 @@ function TabBar() {
           <div
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
+            onAuxClick={(e) => {
+              // Middle click closes the tab, like every browser/editor.
+              if (e.button === 1) {
+                e.preventDefault();
+                closeTab(tab.id);
+              }
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setCtxMenu({ x: e.clientX, y: e.clientY, tab });
+            }}
             className={`group flex items-center h-[35px] px-3 gap-2 cursor-pointer min-w-0 max-w-[220px] border-r border-black/30 transition-colors
               ${isActive
                 ? 'bg-forge-tab-active'
@@ -432,6 +517,14 @@ function TabBar() {
           </div>
         );
       })}
+      {ctxMenu && (
+        <TabContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          tab={ctxMenu.tab}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
     </div>
   );
 }
@@ -702,6 +795,59 @@ function MonacoWrapper() {
       if (action) await action.run();
     });
 
+    useStore.getState().registerRunEditorAction(async (actionId: string) => {
+      editor.focus();
+      const action = editor.getAction(actionId);
+      if (action) await action.run();
+    });
+
+    // ── AI quick actions (context menu) ───────────────────────────────
+    // Operate on the selection, or the whole file when nothing is selected.
+    const runAIAction = (kind: EditorAIActionKind) => {
+      const tab = activeTabRef.current;
+      const model = editor.getModel();
+      if (!tab || tab.imageDataUrl || !model) return;
+
+      const selection = editor.getSelection();
+      const hasSelection = Boolean(selection && !selection.isEmpty());
+      const code = hasSelection && selection ? model.getValueInRange(selection) : model.getValue();
+
+      const ws = useStore.getState().workspacePath;
+      const norm = tab.path.replace(/\\/g, '/');
+      const wsNorm = ws ? ws.replace(/\\/g, '/') : '';
+      const relPath =
+        wsNorm && norm.startsWith(wsNorm + '/') ? norm.slice(wsNorm.length + 1) : tab.name;
+
+      void runEditorAIAction(
+        kind,
+        {
+          relPath,
+          language: tab.language || 'plaintext',
+          code,
+          wholeFile: !hasSelection,
+          startLine: selection?.startLineNumber,
+          endLine: selection?.endLineNumber,
+        },
+        tab.path,
+      );
+    };
+
+    const aiActions: { id: string; label: string; kind: EditorAIActionKind; order: number }[] = [
+      { id: 'forge-ai-explain', label: 'IA: Explicar selección', kind: 'explain', order: 1 },
+      { id: 'forge-ai-refactor', label: 'IA: Refactorizar selección', kind: 'refactor', order: 2 },
+      { id: 'forge-ai-document', label: 'IA: Documentar selección', kind: 'document', order: 3 },
+      { id: 'forge-ai-fix', label: 'IA: Corregir con diagnósticos', kind: 'fix', order: 4 },
+    ];
+    for (const a of aiActions) {
+      editor.addAction({
+        id: a.id,
+        label: a.label,
+        contextMenuGroupId: '0_forge_ai',
+        contextMenuOrder: a.order,
+        run: () => runAIAction(a.kind),
+      });
+    }
+
     editor.onDidChangeCursorPosition((e) => {
       setCursorPosition({
         line: e.position.lineNumber,
@@ -739,7 +885,10 @@ function MonacoWrapper() {
   }, [setCursorPosition, registerFormatActiveDocument]);
 
   useEffect(() => {
-    return () => registerFormatActiveDocument(null);
+    return () => {
+      registerFormatActiveDocument(null);
+      useStore.getState().registerRunEditorAction(null);
+    };
   }, [registerFormatActiveDocument]);
 
   useEffect(() => {

@@ -182,6 +182,36 @@ export async function gitUnstage(workspacePath: string, relPaths: string[]): Pro
   }
 }
 
+/** Discard local changes for the given paths (like VS Code's "Discard
+ *  Changes"): untracked files are removed, staged-new files are dropped
+ *  from index and disk, and everything else is restored from HEAD. */
+export async function gitDiscard(workspacePath: string, relPaths: string[]): Promise<void> {
+  if (relPaths.length === 0) return;
+  const status = await gitStatus(workspacePath);
+  const byPath = new Map(status.changes.map((c) => [c.relPath, c]));
+
+  const untracked: string[] = [];
+  const addedNew: string[] = [];
+  const tracked: string[] = [];
+  for (const p of relPaths) {
+    const change = byPath.get(p);
+    if (!change) continue;
+    if (change.x === '?' || change.y === '?') untracked.push(p);
+    else if (change.x === 'A') addedNew.push(p);
+    else tracked.push(p);
+  }
+
+  if (tracked.length > 0) {
+    await gitOrThrow(workspacePath, ['checkout', 'HEAD', '--', ...tracked]);
+  }
+  if (addedNew.length > 0) {
+    await gitOrThrow(workspacePath, ['rm', '-f', '--', ...addedNew]);
+  }
+  if (untracked.length > 0) {
+    await gitOrThrow(workspacePath, ['clean', '-f', '--', ...untracked]);
+  }
+}
+
 export async function gitCommit(workspacePath: string, message: string): Promise<string> {
   if (!message.trim()) {
     throw new Error('El mensaje de commit no puede estar vacío.');
@@ -349,6 +379,41 @@ export async function gitGetCommitFileVersions(
     original = '';
   }
   return { original, modified };
+}
+
+export interface GitDiffSummary {
+  /** True when the summary covers the index (staged); false → working tree. */
+  staged: boolean;
+  /** Unified diff (truncated for LLM consumption), '' when nothing changed. */
+  text: string;
+}
+
+const DIFF_SUMMARY_MAX_CHARS = 50_000;
+
+/** Diff of the pending changes, meant as LLM input (e.g. to draft a commit
+ *  message). Prefers the staged diff; falls back to the working tree plus
+ *  the list of untracked files. */
+export async function gitDiffSummary(workspacePath: string): Promise<GitDiffSummary> {
+  let staged = true;
+  let text = await gitOrThrow(workspacePath, ['diff', '--cached']);
+  if (!text.trim()) {
+    staged = false;
+    text = await gitOrThrow(workspacePath, ['diff']);
+    const untracked = (
+      await gitOrThrow(workspacePath, ['ls-files', '--others', '--exclude-standard'])
+    )
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (untracked.length > 0) {
+      text += `\n\nArchivos nuevos sin seguimiento:\n${untracked.map((f) => `- ${f}`).join('\n')}`;
+    }
+  }
+  text = text.trim();
+  if (text.length > DIFF_SUMMARY_MAX_CHARS) {
+    text = `${text.slice(0, DIFF_SUMMARY_MAX_CHARS)}\n\n[diff truncado por longitud]`;
+  }
+  return { staged, text };
 }
 
 export async function gitLog(

@@ -211,6 +211,8 @@ interface EditorState {
   gitUnstageFiles: (relPaths: string[]) => Promise<void>;
   /** Commits staged changes. Resolves true on success. */
   gitCommitChanges: (message: string) => Promise<boolean>;
+  /** Discard local changes for the given files (restore HEAD / delete new). */
+  gitDiscardFiles: (relPaths: string[]) => Promise<void>;
   /** Push (publica la rama si aún no tiene upstream). Resolves true on success. */
   gitPushChanges: () => Promise<boolean>;
   /** Pull --ff-only del upstream. Resolves true on success. */
@@ -225,6 +227,10 @@ interface EditorState {
   /** Registered by MonacoWrapper — formats the active editor document. */
   formatActiveDocument: (() => Promise<void>) | null;
   registerFormatActiveDocument: (fn: (() => Promise<void>) | null) => void;
+  /** Registered by MonacoWrapper — runs a Monaco editor action by id
+   *  (e.g. 'editor.action.gotoLine') on the active editor and focuses it. */
+  runEditorAction: ((actionId: string) => Promise<void>) | null;
+  registerRunEditorAction: (fn: ((actionId: string) => Promise<void>) | null) => void;
   /** Debounced auto-save scheduler (no-op when autoSave is off). */
   scheduleAutoSave: (tabId: string) => void;
 
@@ -280,6 +286,13 @@ interface EditorState {
     message?: string;
   }>;
   closeTab: (tabId: string) => void;
+  /** Close every tab except the given one. */
+  closeOtherTabs: (tabId: string) => void;
+  closeAllTabs: () => void;
+  /** Close every tab without unsaved changes. */
+  closeSavedTabs: () => void;
+  /** Activate the tab next to / before the active one (wraps around). */
+  cycleTab: (direction: 1 | -1) => void;
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
   clearPendingEditorReveal: (id: number) => void;
@@ -673,6 +686,7 @@ export const useStore = create<EditorState>((set, get) => ({
   gitError: null,
   problems: [],
   formatActiveDocument: null,
+  runEditorAction: null,
 
   // Extensions initial state
   installedExtensions: [],
@@ -759,6 +773,48 @@ export const useStore = create<EditorState>((set, get) => ({
     } catch (err) {
       set({ gitError: cleanIpcError((err as Error).message) });
       return false;
+    } finally {
+      set({ gitBusy: false });
+      await get().refreshGitStatus();
+    }
+  },
+
+  gitDiscardFiles: async (relPaths: string[]) => {
+    const { workspacePath } = get();
+    if (!workspacePath || relPaths.length === 0) return;
+    set({ gitBusy: true, gitError: null });
+    try {
+      await window.electronAPI.git.discard(workspacePath, relPaths);
+      // Reload any open tab whose file was restored/removed so the editor
+      // doesn't keep showing (and later save) the discarded content.
+      const affected = new Set(
+        relPaths.map((rel) => joinPath(workspacePath, rel)),
+      );
+      for (const tab of get().openTabs) {
+        if (!affected.has(tab.path) || tab.gitDiff || tab.imageDataUrl) continue;
+        try {
+          const content = await window.electronAPI.agent.readFileSafe(
+            workspacePath,
+            tab.path,
+          );
+          if (content === null) {
+            get().closeTab(tab.id);
+          } else {
+            set((state) => ({
+              openTabs: state.openTabs.map((t) =>
+                t.id === tab.id
+                  ? { ...t, content, savedContent: content, isUnsaved: false }
+                  : t,
+              ),
+            }));
+          }
+        } catch {
+          // File gone (untracked discarded): close its tab.
+          get().closeTab(tab.id);
+        }
+      }
+    } catch (err) {
+      set({ gitError: cleanIpcError((err as Error).message) });
     } finally {
       set({ gitBusy: false });
       await get().refreshGitStatus();
@@ -907,6 +963,10 @@ export const useStore = create<EditorState>((set, get) => ({
     if (!tab?.gitDiff) return;
     const next = gitDiffMode === 'inline' ? 'side-by-side' : 'inline';
     get().setGitDiffMode(next);
+  },
+
+  registerRunEditorAction: (fn) => {
+    set({ runEditorAction: fn });
   },
 
   registerFormatActiveDocument: (fn) => {
@@ -1694,6 +1754,40 @@ export const useStore = create<EditorState>((set, get) => ({
 
       return { openTabs: newTabs, activeTabId: newActiveId };
     });
+  },
+
+  closeOtherTabs: (tabId: string) => {
+    set((state) => {
+      const keep = state.openTabs.filter((t) => t.id === tabId);
+      return { openTabs: keep, activeTabId: keep.length > 0 ? tabId : null };
+    });
+  },
+
+  closeAllTabs: () => {
+    set({ openTabs: [], activeTabId: null });
+  },
+
+  closeSavedTabs: () => {
+    set((state) => {
+      const keep = state.openTabs.filter((t) => t.isUnsaved);
+      const stillActive = keep.some((t) => t.id === state.activeTabId);
+      return {
+        openTabs: keep,
+        activeTabId: stillActive
+          ? state.activeTabId
+          : keep.length > 0
+            ? keep[keep.length - 1].id
+            : null,
+      };
+    });
+  },
+
+  cycleTab: (direction: 1 | -1) => {
+    const { openTabs, activeTabId } = get();
+    if (openTabs.length < 2) return;
+    const idx = openTabs.findIndex((t) => t.id === activeTabId);
+    const next = openTabs[(idx + direction + openTabs.length) % openTabs.length];
+    get().setActiveTab(next.id);
   },
 
   setActiveTab: (tabId: string) => {
