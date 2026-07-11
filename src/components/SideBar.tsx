@@ -34,6 +34,9 @@ import {
   Trash2,
   RotateCcw,
   FileCode2,
+  ArrowUp,
+  ArrowDown,
+  UploadCloud,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1204,11 +1207,18 @@ function SourceControlPanel() {
   const gitBranch = useStore((s) => s.gitBranch);
   const gitChanges = useStore((s) => s.gitChanges);
   const gitBusy = useStore((s) => s.gitBusy);
+  const gitSyncBusy = useStore((s) => s.gitSyncBusy);
   const gitError = useStore((s) => s.gitError);
+  const gitAhead = useStore((s) => s.gitAhead);
+  const gitBehind = useStore((s) => s.gitBehind);
+  const gitHasUpstream = useStore((s) => s.gitHasUpstream);
+  const gitHasRemote = useStore((s) => s.gitHasRemote);
   const refreshGitStatus = useStore((s) => s.refreshGitStatus);
   const gitStageFiles = useStore((s) => s.gitStageFiles);
   const gitUnstageFiles = useStore((s) => s.gitUnstageFiles);
   const gitCommitChanges = useStore((s) => s.gitCommitChanges);
+  const gitPushChanges = useStore((s) => s.gitPushChanges);
+  const gitPullChanges = useStore((s) => s.gitPullChanges);
   const openFilePath = useStore((s) => s.openFilePath);
   const openGitDiff = useStore((s) => s.openGitDiff);
   const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
@@ -1222,7 +1232,10 @@ function SourceControlPanel() {
 
   const staged = gitChanges.filter(isStaged);
   const unstaged = gitChanges.filter((change) => !isStaged(change) || isUnstaged(change));
-  const canCommit = staged.length > 0 && message.trim().length > 0 && !gitBusy;
+  const anyBusy = gitBusy || gitSyncBusy;
+  // Como en VS Code: si no hay nada en staged, el commit prepara todos los
+  // cambios automáticamente.
+  const canCommit = gitChanges.length > 0 && message.trim().length > 0 && !anyBusy;
 
   const openChangeDiff = (change: GitChange, mode: 'unstaged' | 'staged') => {
     void openGitDiff(change.relPath, mode === 'staged');
@@ -1235,8 +1248,22 @@ function SourceControlPanel() {
 
   const commit = async () => {
     if (!canCommit) return;
+    if (staged.length === 0) {
+      await gitStageFiles(gitChanges.map((c) => c.relPath));
+      if (useStore.getState().gitError) return;
+    }
     const ok = await gitCommitChanges(message.trim());
     if (ok) setMessage('');
+  };
+
+  const push = async () => {
+    if (anyBusy) return;
+    await gitPushChanges();
+  };
+
+  const pull = async () => {
+    if (anyBusy) return;
+    await gitPullChanges();
   };
 
   const renderChange = (change: GitChange, mode: 'unstaged' | 'staged') => (
@@ -1327,19 +1354,56 @@ function SourceControlPanel() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="h-[35px] flex items-center justify-between px-4 text-[11px] uppercase tracking-wide text-forge-text/70 flex-shrink-0">
         <span>Source Control</span>
-        <button
-          onClick={() => void refreshGitStatus()}
-          title="Refresh"
-          className="text-forge-text hover:text-forge-accent"
-        >
-          <RefreshCw size={13} className={gitBusy ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => void pull()}
+            disabled={anyBusy || !gitHasUpstream}
+            title={gitHasUpstream ? 'Pull' : 'Pull (sin upstream)'}
+            className="text-forge-text hover:text-forge-accent disabled:opacity-30"
+          >
+            <ArrowDown size={13} />
+          </button>
+          <button
+            onClick={() => void push()}
+            disabled={anyBusy || !gitHasRemote}
+            title={gitHasRemote ? 'Push' : 'Push (sin remoto configurado)'}
+            className="text-forge-text hover:text-forge-accent disabled:opacity-30"
+          >
+            <ArrowUp size={13} />
+          </button>
+          <button
+            onClick={() => void refreshGitStatus()}
+            title="Refresh"
+            className="text-forge-text hover:text-forge-accent"
+          >
+            <RefreshCw size={13} className={anyBusy ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       <div className="px-3 pb-3 flex-shrink-0">
         <div className="flex items-center gap-2 text-[12px] text-forge-text/70 mb-2">
           <GitBranch size={13} className="text-forge-accent" />
           <span className="truncate">{gitBranch || 'HEAD'}</span>
+          {gitHasUpstream && (gitAhead > 0 || gitBehind > 0) && (
+            <span
+              className="flex items-center gap-0.5 text-[11px] text-forge-text/60"
+              title={`${gitBehind} por descargar · ${gitAhead} por subir`}
+            >
+              {gitBehind > 0 && (
+                <>
+                  {gitBehind}
+                  <ArrowDown size={11} />
+                </>
+              )}
+              {gitAhead > 0 && (
+                <>
+                  {gitAhead}
+                  <ArrowUp size={11} />
+                </>
+              )}
+            </span>
+          )}
           <span className="text-forge-text/35">·</span>
           <span className="text-forge-text/50">{gitChanges.length} changes</span>
         </div>
@@ -1361,8 +1425,43 @@ function SourceControlPanel() {
           className="mt-1.5 w-full flex items-center justify-center gap-2 rounded bg-forge-accent/15 text-forge-accent text-[12px] py-1.5 hover:bg-forge-accent/25 disabled:opacity-40 disabled:hover:bg-forge-accent/15"
         >
           <GitCommit size={13} />
-          Commit Staged
+          {staged.length > 0 ? 'Commit Staged' : 'Commit All'}
         </button>
+        {gitHasRemote && !gitHasUpstream && (
+          <button
+            onClick={() => void push()}
+            disabled={anyBusy}
+            className="mt-1.5 w-full flex items-center justify-center gap-2 rounded bg-forge-accent/15 text-forge-accent text-[12px] py-1.5 hover:bg-forge-accent/25 disabled:opacity-40 disabled:hover:bg-forge-accent/15"
+          >
+            {gitSyncBusy ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />}
+            Publish Branch
+          </button>
+        )}
+        {gitHasUpstream && (gitAhead > 0 || gitBehind > 0) && (
+          <button
+            onClick={() => {
+              void (async () => {
+                if (gitBehind > 0) {
+                  const ok = await gitPullChanges();
+                  if (!ok) return;
+                }
+                if (useStore.getState().gitAhead > 0) await gitPushChanges();
+              })();
+            }}
+            disabled={anyBusy}
+            title={`Pull ${gitBehind} y push ${gitAhead}`}
+            className="mt-1.5 w-full flex items-center justify-center gap-2 rounded bg-forge-accent/15 text-forge-accent text-[12px] py-1.5 hover:bg-forge-accent/25 disabled:opacity-40 disabled:hover:bg-forge-accent/15"
+          >
+            {gitSyncBusy ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            Sync Changes
+            {gitBehind > 0 && (
+              <span className="flex items-center">{gitBehind}<ArrowDown size={11} /></span>
+            )}
+            {gitAhead > 0 && (
+              <span className="flex items-center">{gitAhead}<ArrowUp size={11} /></span>
+            )}
+          </button>
+        )}
         {gitError && (
           <p className="mt-2 text-[11px] leading-snug text-red-400/90">{gitError}</p>
         )}

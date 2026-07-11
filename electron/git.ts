@@ -19,6 +19,14 @@ export interface GitStatusPayload {
   isRepo: boolean;
   branch: string | null;
   changes: GitChange[];
+  /** Commits ahead of the upstream (pending push). 0 when no upstream. */
+  ahead: number;
+  /** Commits behind the upstream (pending pull). 0 when no upstream. */
+  behind: number;
+  /** The current branch tracks a remote branch. */
+  hasUpstream: boolean;
+  /** The repo has at least one remote configured. */
+  hasRemote: boolean;
 }
 
 export interface GitLogEntry {
@@ -36,7 +44,13 @@ function runGit(
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn('git', args, { cwd, windowsHide: true });
+      child = spawn('git', args, {
+        cwd,
+        windowsHide: true,
+        // Never block on an interactive credential/host prompt inside the
+        // app: fail fast with a readable error instead.
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      });
     } catch (err) {
       reject(err);
       return;
@@ -58,6 +72,16 @@ async function gitOrThrow(cwd: string, args: string[]): Promise<string> {
   return stdout;
 }
 
+const NOT_A_REPO: GitStatusPayload = {
+  isRepo: false,
+  branch: null,
+  changes: [],
+  ahead: 0,
+  behind: 0,
+  hasUpstream: false,
+  hasRemote: false,
+};
+
 export async function gitStatus(workspacePath: string): Promise<GitStatusPayload> {
   try {
     const { stdout, code } = await runGit(workspacePath, [
@@ -65,11 +89,11 @@ export async function gitStatus(workspacePath: string): Promise<GitStatusPayload
       '--is-inside-work-tree',
     ]);
     if (code !== 0 || stdout.trim() !== 'true') {
-      return { isRepo: false, branch: null, changes: [] };
+      return NOT_A_REPO;
     }
   } catch {
     // git binary not installed
-    return { isRepo: false, branch: null, changes: [] };
+    return NOT_A_REPO;
   }
 
   let branch: string | null = null;
@@ -103,7 +127,35 @@ export async function gitStatus(workspacePath: string): Promise<GitStatusPayload
     changes.push({ relPath, x, y });
   }
 
-  return { isRepo: true, branch, changes };
+  let hasRemote = false;
+  try {
+    hasRemote = (await gitOrThrow(workspacePath, ['remote'])).trim().length > 0;
+  } catch {
+    hasRemote = false;
+  }
+
+  let ahead = 0;
+  let behind = 0;
+  let hasUpstream = false;
+  try {
+    const counts = (
+      await gitOrThrow(workspacePath, [
+        'rev-list',
+        '--left-right',
+        '--count',
+        'HEAD...@{upstream}',
+      ])
+    ).trim();
+    const [a = '0', b = '0'] = counts.split(/\s+/);
+    ahead = Number.parseInt(a, 10) || 0;
+    behind = Number.parseInt(b, 10) || 0;
+    hasUpstream = true;
+  } catch {
+    // No upstream configured (or no commits yet).
+    hasUpstream = false;
+  }
+
+  return { isRepo: true, branch, changes, ahead, behind, hasUpstream, hasRemote };
 }
 
 export async function gitStage(workspacePath: string, relPaths: string[]): Promise<void> {
@@ -134,8 +186,99 @@ export async function gitCommit(workspacePath: string, message: string): Promise
   if (!message.trim()) {
     throw new Error('El mensaje de commit no puede estar vacío.');
   }
-  const stdout = await gitOrThrow(workspacePath, ['commit', '-m', message]);
+  const { stdout, stderr, code } = await runGit(workspacePath, ['commit', '-m', message]);
+  if (code !== 0) {
+    const raw = (stderr.trim() || stdout.trim());
+    // The most common first-run failure: git identity not configured. Give
+    // an actionable message instead of git's multi-line lecture.
+    if (/user\.(name|email)/.test(raw)) {
+      throw new Error(
+        'Git no tiene identidad configurada. Ejecuta:\n' +
+          'git config --global user.name "Tu Nombre"\n' +
+          'git config --global user.email "tu@email.com"',
+      );
+    }
+    throw new Error(raw || `git commit falló (código ${code}).`);
+  }
   return stdout.trim();
+}
+
+async function upstreamRef(workspacePath: string): Promise<string | null> {
+  const { stdout, code } = await runGit(workspacePath, [
+    'rev-parse',
+    '--abbrev-ref',
+    '--symbolic-full-name',
+    '@{upstream}',
+  ]);
+  return code === 0 ? stdout.trim() || null : null;
+}
+
+/** Re-throw remote errors with an actionable message when git couldn't
+ *  authenticate (interactive prompts are disabled inside the app). */
+function friendlyRemoteError(err: unknown): Error {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/could not read (Username|Password)|Authentication failed|Permission denied \(publickey\)/i.test(msg)) {
+    return new Error(
+      'Git no pudo autenticarse con el remoto. Configura un credential helper ' +
+        '(p. ej. `git config --global credential.helper store`) o usa una URL SSH ' +
+        'con tu clave cargada, y prueba `git push` en una terminal primero.\n\n' + msg,
+    );
+  }
+  return err instanceof Error ? err : new Error(msg);
+}
+
+export async function gitPush(workspacePath: string): Promise<string> {
+  const upstream = await upstreamRef(workspacePath);
+  if (upstream) {
+    try {
+      return (await gitOrThrow(workspacePath, ['push'])).trim();
+    } catch (err) {
+      throw friendlyRemoteError(err);
+    }
+  }
+  // No upstream yet: publish the current branch to the first remote.
+  const remotes = (await gitOrThrow(workspacePath, ['remote']))
+    .split('\n')
+    .map((r) => r.trim())
+    .filter(Boolean);
+  if (remotes.length === 0) {
+    throw new Error(
+      'No hay ningún remoto configurado. Añade uno con:\ngit remote add origin <url>',
+    );
+  }
+  const remote = remotes.includes('origin') ? 'origin' : remotes[0];
+  const branch = (
+    await gitOrThrow(workspacePath, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  ).trim();
+  if (!branch || branch === 'HEAD') {
+    throw new Error('No hay una rama activa para hacer push (HEAD desprendido).');
+  }
+  try {
+    return (await gitOrThrow(workspacePath, ['push', '-u', remote, branch])).trim();
+  } catch (err) {
+    throw friendlyRemoteError(err);
+  }
+}
+
+export async function gitPull(workspacePath: string): Promise<string> {
+  const upstream = await upstreamRef(workspacePath);
+  if (!upstream) {
+    throw new Error(
+      'La rama actual no tiene upstream configurado. Haz push primero para publicarla.',
+    );
+  }
+  try {
+    return (await gitOrThrow(workspacePath, ['pull', '--ff-only'])).trim();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/Not possible to fast-forward|divergent branches/i.test(msg)) {
+      throw new Error(
+        'Las ramas local y remota divergieron. Resuélvelo en una terminal con ' +
+          '`git pull --rebase` o `git merge`.',
+      );
+    }
+    throw friendlyRemoteError(err);
+  }
 }
 
 export async function gitDiff(

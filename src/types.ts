@@ -299,6 +299,14 @@ export interface GitStatusPayload {
   isRepo: boolean;
   branch: string | null;
   changes: GitChange[];
+  /** Commits ahead of the upstream (pending push). 0 when no upstream. */
+  ahead: number;
+  /** Commits behind the upstream (pending pull). 0 when no upstream. */
+  behind: number;
+  /** The current branch tracks a remote branch. */
+  hasUpstream: boolean;
+  /** The repo has at least one remote configured. */
+  hasRemote: boolean;
 }
 
 export interface GitLogEntry {
@@ -524,6 +532,10 @@ export interface ElectronAPI {
     unstage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
     /** Commits staged changes. Resolves with git's stdout summary. */
     commit: (workspacePath: string, message: string) => Promise<string>;
+    /** Push; publishes the branch (`-u`) when it has no upstream yet. */
+    push: (workspacePath: string) => Promise<string>;
+    /** Pull --ff-only from the upstream. */
+    pull: (workspacePath: string) => Promise<string>;
     diff: (workspacePath: string, relPath: string, staged?: boolean) => Promise<string>;
     fileVersions: (
       workspacePath: string,

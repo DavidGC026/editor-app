@@ -195,14 +195,26 @@ interface EditorState {
   gitIsRepo: boolean;
   gitBranch: string | null;
   gitChanges: GitChange[];
+  /** Commits pendientes de push respecto al upstream. */
+  gitAhead: number;
+  /** Commits pendientes de pull respecto al upstream. */
+  gitBehind: number;
+  gitHasUpstream: boolean;
+  gitHasRemote: boolean;
   /** True while a stage/unstage/commit operation is in flight. */
   gitBusy: boolean;
+  /** True while a push/pull is in flight (network, can be slow). */
+  gitSyncBusy: boolean;
   gitError: string | null;
   refreshGitStatus: () => Promise<void>;
   gitStageFiles: (relPaths: string[]) => Promise<void>;
   gitUnstageFiles: (relPaths: string[]) => Promise<void>;
   /** Commits staged changes. Resolves true on success. */
   gitCommitChanges: (message: string) => Promise<boolean>;
+  /** Push (publica la rama si aún no tiene upstream). Resolves true on success. */
+  gitPushChanges: () => Promise<boolean>;
+  /** Pull --ff-only del upstream. Resolves true on success. */
+  gitPullChanges: () => Promise<boolean>;
   /** Open a read-only Git diff tab for the given file. */
   openGitDiff: (relPath: string, staged?: boolean) => Promise<void>;
   /** Open a historical diff for one commit (parent vs commit). */
@@ -652,7 +664,12 @@ export const useStore = create<EditorState>((set, get) => ({
   gitIsRepo: false,
   gitBranch: null,
   gitChanges: [],
+  gitAhead: 0,
+  gitBehind: 0,
+  gitHasUpstream: false,
+  gitHasRemote: false,
   gitBusy: false,
+  gitSyncBusy: false,
   gitError: null,
   problems: [],
   formatActiveDocument: null,
@@ -674,8 +691,17 @@ export const useStore = create<EditorState>((set, get) => ({
   // ── Git actions ─────────────────────────────────────────────────────
   refreshGitStatus: async () => {
     const { workspacePath } = get();
+    const empty = {
+      gitIsRepo: false,
+      gitBranch: null,
+      gitChanges: [] as GitChange[],
+      gitAhead: 0,
+      gitBehind: 0,
+      gitHasUpstream: false,
+      gitHasRemote: false,
+    };
     if (!workspacePath || !window.electronAPI?.git) {
-      set({ gitIsRepo: false, gitBranch: null, gitChanges: [] });
+      set(empty);
       return;
     }
     try {
@@ -684,10 +710,14 @@ export const useStore = create<EditorState>((set, get) => ({
         gitIsRepo: status.isRepo,
         gitBranch: status.branch,
         gitChanges: status.changes,
+        gitAhead: status.ahead ?? 0,
+        gitBehind: status.behind ?? 0,
+        gitHasUpstream: Boolean(status.hasUpstream),
+        gitHasRemote: Boolean(status.hasRemote),
       });
     } catch (err) {
       console.warn('[forge] git status failed:', (err as Error).message);
-      set({ gitIsRepo: false, gitBranch: null, gitChanges: [] });
+      set(empty);
     }
   },
 
@@ -731,6 +761,38 @@ export const useStore = create<EditorState>((set, get) => ({
       return false;
     } finally {
       set({ gitBusy: false });
+      await get().refreshGitStatus();
+    }
+  },
+
+  gitPushChanges: async () => {
+    const { workspacePath } = get();
+    if (!workspacePath) return false;
+    set({ gitSyncBusy: true, gitError: null });
+    try {
+      await window.electronAPI.git.push(workspacePath);
+      return true;
+    } catch (err) {
+      set({ gitError: cleanIpcError((err as Error).message) });
+      return false;
+    } finally {
+      set({ gitSyncBusy: false });
+      await get().refreshGitStatus();
+    }
+  },
+
+  gitPullChanges: async () => {
+    const { workspacePath } = get();
+    if (!workspacePath) return false;
+    set({ gitSyncBusy: true, gitError: null });
+    try {
+      await window.electronAPI.git.pull(workspacePath);
+      return true;
+    } catch (err) {
+      set({ gitError: cleanIpcError((err as Error).message) });
+      return false;
+    } finally {
+      set({ gitSyncBusy: false });
       await get().refreshGitStatus();
     }
   },

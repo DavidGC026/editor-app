@@ -139,10 +139,16 @@ export interface ElectronAPI {
       isRepo: boolean;
       branch: string | null;
       changes: { relPath: string; x: string; y: string }[];
+      ahead: number;
+      behind: number;
+      hasUpstream: boolean;
+      hasRemote: boolean;
     }>;
     stage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
     unstage: (workspacePath: string, relPaths: string[]) => Promise<boolean>;
     commit: (workspacePath: string, message: string) => Promise<string>;
+    push: (workspacePath: string) => Promise<string>;
+    pull: (workspacePath: string) => Promise<string>;
     diff: (workspacePath: string, relPath: string, staged?: boolean) => Promise<string>;
     fileVersions: (
       workspacePath: string,
@@ -442,6 +448,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('git:unstage', workspacePath, relPaths),
     commit: (workspacePath: string, message: string) =>
       ipcRenderer.invoke('git:commit', workspacePath, message),
+    push: (workspacePath: string) => ipcRenderer.invoke('git:push', workspacePath),
+    pull: (workspacePath: string) => ipcRenderer.invoke('git:pull', workspacePath),
     diff: (workspacePath: string, relPath: string, staged?: boolean) =>
       ipcRenderer.invoke('git:diff', workspacePath, relPath, staged),
     fileVersions: (workspacePath: string, relPath: string, staged?: boolean) =>

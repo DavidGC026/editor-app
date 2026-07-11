@@ -43,6 +43,8 @@ import {
   gitGetFileVersions,
   gitGetCommitFileVersions,
   gitLog,
+  gitPush,
+  gitPull,
 } from './git';
 import {
   ClaudeIdeEditorState,
@@ -1315,6 +1317,16 @@ ipcMain.handle('git:unstage', async (_event, workspacePath: string, relPaths: st
 ipcMain.handle('git:commit', async (_event, workspacePath: string, message: string) => {
   if (!workspacePath || typeof message !== 'string') throw new Error('Argumentos inválidos.');
   return gitCommit(workspacePath, message);
+});
+
+ipcMain.handle('git:push', async (_event, workspacePath: string) => {
+  if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
+  return gitPush(workspacePath);
+});
+
+ipcMain.handle('git:pull', async (_event, workspacePath: string) => {
+  if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
+  return gitPull(workspacePath);
 });
 
 ipcMain.handle('git:diff', async (_event, workspacePath: string, relPath: string, staged = false) => {
