@@ -4,11 +4,12 @@ import TitleBar from './components/TitleBar';
 import ActivityBar from './components/ActivityBar';
 import SideBar from './components/SideBar';
 import EditorArea from './components/EditorArea';
-import BottomPanel from './components/BottomPanel';
+import BottomPanel, { TerminalsPanel } from './components/BottomPanel';
 import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
 import QuickOpen from './components/QuickOpen';
 import AIPanel from './components/AIPanel/AIPanel';
+import { Bot, Eraser, Maximize2, MessageSquare, Minimize2, RotateCcw, Terminal as TerminalIcon, X } from 'lucide-react';
 import type { ClaudeIdeEditorState } from './types';
 import { lspClient } from './lsp/client';
 
@@ -38,6 +39,7 @@ const DIVIDER_HIT = 6;
 /** AI sidebar (right) bounds. Larger than the left sidebar by design. */
 const AI_PANEL_MIN = 280;
 const AI_PANEL_MAX = 720;
+const RIGHT_PANEL_MAXIMIZED_WIDTH = 'minmax(520px, 58vw)';
 
 function toFileUri(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');
@@ -155,7 +157,7 @@ function VerticalDivider({
           left: '50%',
           transform: 'translateX(-50%)',
           width: 2,
-          background: active ? '#B65A48' : 'transparent',
+          background: active ? '#E52E3D' : 'transparent',
           transition: 'background 0.12s ease',
           pointerEvents: 'none',
         }}
@@ -234,11 +236,174 @@ function HorizontalDivider({
           top: '50%',
           transform: 'translateY(-50%)',
           height: 2,
-          background: active ? '#B65A48' : 'transparent',
+          background: active ? '#E52E3D' : 'transparent',
           transition: 'background 0.12s ease',
           pointerEvents: 'none',
         }}
       />
+    </div>
+  );
+}
+
+function RightWorkspace() {
+  const terminalSessions = useStore((s) => s.terminalSessions);
+  const activeTerminalSessionId = useStore((s) => s.activeTerminalSessionId);
+  const setActiveTerminalSession = useStore((s) => s.setActiveTerminalSession);
+  const closeTerminalSession = useStore((s) => s.closeTerminalSession);
+  const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
+  const runCommandInTerminalSession = useStore((s) => s.runCommandInTerminalSession);
+  const rightPanelMaximized = useStore((s) => s.rightPanelMaximized);
+  const setRightPanelMaximized = useStore((s) => s.setRightPanelMaximized);
+  const aiPanelVisible = useStore((s) => s.aiPanelVisible);
+  const toggleAIPanel = useStore((s) => s.toggleAIPanel);
+
+  const agentSessions = terminalSessions.filter((session) => session.agentId);
+  const [localTab, setLocalTab] = useState<'chat' | string>(
+    activeTerminalSessionId && agentSessions.some((s) => s.id === activeTerminalSessionId)
+      ? activeTerminalSessionId
+      : 'chat',
+  );
+
+  useEffect(() => {
+    if (activeTerminalSessionId && agentSessions.some((s) => s.id === activeTerminalSessionId)) {
+      setLocalTab(activeTerminalSessionId);
+      return;
+    }
+    if (localTab !== 'chat' && !agentSessions.some((s) => s.id === localTab)) {
+      setLocalTab(agentSessions[0]?.id ?? 'chat');
+    }
+  }, [activeTerminalSessionId, agentSessions, localTab]);
+
+  const selectedAgent = localTab === 'chat'
+    ? null
+    : agentSessions.find((session) => session.id === localTab) ?? null;
+
+  return (
+    <div className="w-full h-full bg-forge-sidebar border-l border-forge-border/40 flex flex-col overflow-hidden">
+      <div className="h-[34px] flex items-center justify-between border-b border-forge-border/50 bg-forge-titlebar select-none">
+        <div className="flex items-center min-w-0 overflow-x-auto sidebar-scroll">
+          <button
+            onClick={() => setLocalTab('chat')}
+            className={`h-[34px] px-3 flex items-center gap-1.5 border-b-2 text-[12px] flex-shrink-0 ${
+              localTab === 'chat'
+                ? 'border-forge-accent text-forge-text-strong'
+                : 'border-transparent text-forge-text/65 hover:text-forge-text'
+            }`}
+          >
+            <MessageSquare size={13} />
+            Chat
+          </button>
+          {agentSessions.map((session) => (
+            <button
+              key={session.id}
+              onClick={() => {
+                setLocalTab(session.id);
+                setActiveTerminalSession(session.id);
+              }}
+              className={`group h-[34px] px-3 flex items-center gap-1.5 border-b-2 text-[12px] max-w-[160px] flex-shrink-0 ${
+                localTab === session.id
+                  ? 'border-forge-accent text-forge-accent'
+                  : 'border-transparent text-forge-text/65 hover:text-forge-text'
+              }`}
+              title={session.label}
+            >
+              <TerminalIcon size={13} />
+              <span className="truncate">{session.label}</span>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTerminalSession(session.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  closeTerminalSession(session.id);
+                }}
+                className="opacity-0 group-hover:opacity-100 hover:text-forge-text-strong"
+                title="Close agent terminal"
+              >
+                <X size={11} />
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-1 px-2 flex-shrink-0">
+          {selectedAgent && (
+            <>
+              <button
+                onClick={() => runCommandInTerminalSession(selectedAgent.id, 'clear')}
+                title="Clear terminal"
+                className="h-7 w-7 rounded flex items-center justify-center text-forge-text/70 hover:text-forge-accent hover:bg-white/5"
+              >
+                <Eraser size={14} />
+              </button>
+              <button
+                onClick={() => {
+                  const agentId = selectedAgent.agentId;
+                  closeTerminalSession(selectedAgent.id);
+                  if (agentId) window.setTimeout(() => runAgentInTerminal(agentId), 0);
+                }}
+                title="Restart agent"
+                className="h-7 w-7 rounded flex items-center justify-center text-forge-text/70 hover:text-forge-accent hover:bg-white/5"
+              >
+                <RotateCcw size={14} />
+              </button>
+            </>
+          )}
+          <button
+            onClick={() => setRightPanelMaximized(!rightPanelMaximized)}
+            title={rightPanelMaximized ? 'Restore panel width' : 'Maximize right panel'}
+            className="h-7 w-7 rounded flex items-center justify-center text-forge-text/70 hover:text-forge-accent hover:bg-white/5"
+          >
+            {rightPanelMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
+          <button
+            onClick={() => {
+              if (localTab === 'chat') toggleAIPanel();
+              else if (selectedAgent) closeTerminalSession(selectedAgent.id);
+            }}
+            title={localTab === 'chat' ? 'Hide chat' : 'Close agent terminal'}
+            className="h-7 w-7 rounded flex items-center justify-center text-forge-text/70 hover:text-forge-accent hover:bg-white/5"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 relative">
+        {localTab === 'chat' ? (
+          aiPanelVisible ? (
+            <AIPanel compact />
+          ) : (
+            <div className="h-full flex flex-col items-center justify-center gap-2 text-forge-text/50 text-[12px]">
+              <Bot size={28} />
+              <p>AI chat is hidden.</p>
+              <button
+                onClick={toggleAIPanel}
+                className="px-3 py-1.5 rounded bg-forge-accent/15 text-forge-accent hover:bg-forge-accent/25"
+              >
+                Show Chat
+              </button>
+            </div>
+          )
+        ) : selectedAgent ? (
+          <TerminalsPanel
+            visible
+            kind="agents"
+            sessionId={selectedAgent.id}
+            hideTabs
+            showNew={false}
+          />
+        ) : (
+          <div className="h-full flex items-center justify-center text-forge-text/50 text-[12px]">
+            No agent terminal selected.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -264,6 +429,9 @@ export default function App() {
   const aiPanelVisible = useStore((s) => s.aiPanelVisible);
   const aiPanelWidth = useStore((s) => s.aiPanelWidth);
   const setAIPanelWidth = useStore((s) => s.setAIPanelWidth);
+  const agentTerminalDock = useStore((s) => s.agentTerminalDock);
+  const hasAgentTerminal = useStore((s) => s.terminalSessions.some((session) => session.agentId));
+  const rightPanelMaximized = useStore((s) => s.rightPanelMaximized);
   const refreshAIConfig = useStore((s) => s.refreshAIConfig);
   const refreshExtensions = useStore((s) => s.refreshExtensions);
   const refreshLiveServerStatus = useStore((s) => s.refreshLiveServerStatus);
@@ -297,7 +465,7 @@ export default function App() {
     return () => lspClient.setProblemsHandler(null);
   }, []);
 
-  // Load installed VSIX extensions (themes + snippets) from disk.
+  // Load installed VSIX/Open VSX extensions from disk.
   useEffect(() => {
     void refreshExtensions();
   }, [refreshExtensions]);
@@ -570,8 +738,10 @@ export default function App() {
   const sidebarPart = sidebarVisible
     ? `${sidebarWidth}px ${DIVIDER_HIT}px`
     : '0px 0px';
-  const aiPart = aiPanelVisible
-    ? `${DIVIDER_HIT}px ${aiPanelWidth}px`
+  const rightAgentPanelVisible = agentTerminalDock === 'right' && hasAgentTerminal;
+  const rightPanelVisible = aiPanelVisible || rightAgentPanelVisible;
+  const aiPart = rightPanelVisible
+    ? `${DIVIDER_HIT}px ${rightPanelMaximized ? RIGHT_PANEL_MAXIMIZED_WIDTH : `${aiPanelWidth}px`}`
     : '0px 0px';
   const gridTemplateColumns = `${sidebarPart} 1fr ${aiPart}`;
 
@@ -633,8 +803,8 @@ export default function App() {
         )}
       </div>
 
-      {/* Row 3 - Col 4: right vertical drag divider (only when AI panel is open) */}
-      {aiPanelVisible && (
+      {/* Row 3 - Col 4: right vertical drag divider */}
+      {rightPanelVisible && (
         <div
           style={{
             gridColumn: '4',
@@ -649,7 +819,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Row 3 - Col 5: AI Panel */}
+      {/* Row 3 - Col 5: AI workspace */}
       <div
         style={{
           gridColumn: '5',
@@ -657,7 +827,7 @@ export default function App() {
           overflow: 'hidden',
         }}
       >
-        {aiPanelVisible && <AIPanel />}
+        {rightPanelVisible && <RightWorkspace />}
       </div>
 
       {/* Row 4: StatusBar (full width) */}

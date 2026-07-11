@@ -4,7 +4,9 @@ import { lspClient } from '../lsp/client';
 import { isHtmlFile, type GitChange, type Tab, type TreeNode } from '../types';
 import ExtensionsPanel from './ExtensionsPanel';
 import SettingsPanel from './SettingsPanel';
+import { TerminalsPanel } from './BottomPanel';
 import {
+  Bot,
   ChevronRight,
   ChevronDown,
   File,
@@ -42,6 +44,7 @@ import {
   Copy,
   LogOut,
   ExternalLink,
+  Orbit,
 } from 'lucide-react';
 import { generateCommitMessage } from '../ai/quickActions';
 
@@ -137,6 +140,29 @@ interface RunCommand {
 interface PackageScript {
   name: string;
   command: string;
+}
+
+async function detectPackageManager(workspacePath: string): Promise<'pnpm' | 'npm' | 'yarn' | 'bun'> {
+  const exists = async (name: string) => {
+    try {
+      const content = await window.electronAPI.agent.readFileSafe(workspacePath, joinPath(workspacePath, name));
+      return content !== null;
+    } catch {
+      return false;
+    }
+  };
+  if (await exists('pnpm-lock.yaml')) return 'pnpm';
+  if (await exists('bun.lockb')) return 'bun';
+  if (await exists('bun.lock')) return 'bun';
+  if (await exists('yarn.lock')) return 'yarn';
+  return 'npm';
+}
+
+function scriptCommandFor(pm: 'pnpm' | 'npm' | 'yarn' | 'bun', name: string): string {
+  if (pm === 'npm') return `npm run ${name}`;
+  if (pm === 'yarn') return `yarn ${name}`;
+  if (pm === 'bun') return `bun run ${name}`;
+  return `pnpm run ${name}`;
 }
 
 const RUN_COMMANDS_STORAGE_KEY = 'forge.runCommands.v1';
@@ -355,7 +381,7 @@ function TreeItem({
 
   // Color logic
   let textColor = '#D0D3DA';
-  if (isDirectory && isActiveFolder) textColor = '#B65A48';
+  if (isDirectory && isActiveFolder) textColor = '#E52E3D';
   else if (!isDirectory && isActiveFile) textColor = '#FFFFFF';
 
   const isRenaming = renameNodeId === node.id;
@@ -375,7 +401,7 @@ function TreeItem({
           style={{
             paddingLeft: `${depth * 14 + 8}px`,
             color: textColor,
-            backgroundColor: isSelected ? 'rgba(182, 90, 72, 0.1)' : 'transparent',
+            backgroundColor: isSelected ? 'rgba(229, 46, 61, 0.1)' : 'transparent',
           }}
         >
           {isDirectory ? (
@@ -691,7 +717,7 @@ function AddDropdown({
     >
       <button
         className="block w-full text-left px-3 py-1.5 text-[13px] transition-colors"
-        style={{ color: hover === 'file' ? '#B65A48' : '#D3D5DE' }}
+        style={{ color: hover === 'file' ? '#E52E3D' : '#D3D5DE' }}
         onMouseEnter={() => setHover('file')}
         onMouseLeave={() => setHover(null)}
         onClick={() => onPick('file')}
@@ -700,7 +726,7 @@ function AddDropdown({
       </button>
       <button
         className="block w-full text-left px-3 py-1.5 text-[13px] transition-colors"
-        style={{ color: hover === 'folder' ? '#B65A48' : '#D3D5DE' }}
+        style={{ color: hover === 'folder' ? '#E52E3D' : '#D3D5DE' }}
         onMouseEnter={() => setHover('folder')}
         onMouseLeave={() => setHover(null)}
         onClick={() => onPick('folder')}
@@ -1400,6 +1426,7 @@ function SourceControlPanel() {
   const workspacePath = useStore((s) => s.workspacePath);
   const gitIsRepo = useStore((s) => s.gitIsRepo);
   const gitBranch = useStore((s) => s.gitBranch);
+  const gitBranches = useStore((s) => s.gitBranches);
   const gitChanges = useStore((s) => s.gitChanges);
   const gitBusy = useStore((s) => s.gitBusy);
   const gitSyncBusy = useStore((s) => s.gitSyncBusy);
@@ -1415,6 +1442,8 @@ function SourceControlPanel() {
   const gitDiscardFiles = useStore((s) => s.gitDiscardFiles);
   const gitPushChanges = useStore((s) => s.gitPushChanges);
   const gitPullChanges = useStore((s) => s.gitPullChanges);
+  const gitCheckoutBranch = useStore((s) => s.gitCheckoutBranch);
+  const gitCreateBranch = useStore((s) => s.gitCreateBranch);
   const openFilePath = useStore((s) => s.openFilePath);
   const openGitDiff = useStore((s) => s.openGitDiff);
   const runCommandInTerminal = useStore((s) => s.runCommandInTerminal);
@@ -1424,6 +1453,7 @@ function SourceControlPanel() {
   const [aiMsgBusy, setAiMsgBusy] = useState(false);
   const [aiMsgError, setAiMsgError] = useState<string | null>(null);
   const [githubModalOpen, setGithubModalOpen] = useState(false);
+  const [branchDraft, setBranchDraft] = useState('');
 
   useEffect(() => {
     void refreshGitStatus();
@@ -1476,6 +1506,22 @@ function SourceControlPanel() {
   const pull = async () => {
     if (anyBusy) return;
     await gitPullChanges();
+  };
+
+  const checkoutBranch = async (name: string) => {
+    if (!name || name === gitBranch) return;
+    if (gitChanges.length > 0) {
+      const ok = confirm('Hay cambios sin commit. Cambiar de rama puede fallar o requerir stash. ¿Continuar?');
+      if (!ok) return;
+    }
+    await gitCheckoutBranch(name);
+  };
+
+  const createBranch = async () => {
+    const name = branchDraft.trim();
+    if (!name) return;
+    const ok = await gitCreateBranch(name);
+    if (ok) setBranchDraft('');
   };
 
   const renderChange = (change: GitChange, mode: 'unstaged' | 'staged') => (
@@ -1617,7 +1663,22 @@ function SourceControlPanel() {
       <div className="px-3 pb-3 flex-shrink-0">
         <div className="flex items-center gap-2 text-[12px] text-forge-text/70 mb-2">
           <GitBranch size={13} className="text-forge-accent" />
-          <span className="truncate">{gitBranch || 'HEAD'}</span>
+          <select
+            value={gitBranch || ''}
+            onChange={(e) => void checkoutBranch(e.target.value)}
+            disabled={anyBusy || gitBranches.length === 0}
+            className="min-w-0 max-w-[150px] bg-forge-input text-forge-text text-[12px] px-1.5 py-0.5 rounded border border-forge-border/60 outline-none focus:border-forge-accent/60 disabled:opacity-60"
+            title="Checkout branch"
+          >
+            <option value={gitBranch || ''}>{gitBranch || 'HEAD'}</option>
+            {gitBranches
+              .filter((branch) => branch.name !== gitBranch)
+              .map((branch) => (
+                <option key={`${branch.remote ? 'r' : 'l'}-${branch.name}`} value={branch.name}>
+                  {branch.remote ? `remote: ${branch.name}` : branch.name}
+                </option>
+              ))}
+          </select>
           {gitHasUpstream && (gitAhead > 0 || gitBehind > 0) && (
             <span
               className="flex items-center gap-0.5 text-[11px] text-forge-text/60"
@@ -1639,6 +1700,28 @@ function SourceControlPanel() {
           )}
           <span className="text-forge-text/35">·</span>
           <span className="text-forge-text/50">{gitChanges.length} changes</span>
+        </div>
+        <div className="mb-2 flex items-center gap-1">
+          <input
+            value={branchDraft}
+            onChange={(e) => setBranchDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void createBranch();
+              if (e.key === 'Escape') setBranchDraft('');
+            }}
+            placeholder="new-branch"
+            disabled={anyBusy}
+            spellCheck={false}
+            className="min-w-0 flex-1 bg-forge-input text-forge-text text-[11px] px-2 py-1 rounded outline-none border border-transparent focus:border-forge-accent/60 disabled:opacity-60"
+          />
+          <button
+            onClick={() => void createBranch()}
+            disabled={anyBusy || !branchDraft.trim()}
+            title="Create and checkout branch"
+            className="w-7 h-6 flex items-center justify-center rounded text-forge-text hover:text-forge-accent hover:bg-white/5 disabled:opacity-30"
+          >
+            <Plus size={13} />
+          </button>
         </div>
         <div className="relative">
           <textarea
@@ -1786,6 +1869,7 @@ function RunDebugPanel() {
   const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
   const [commands, setCommands] = useState<RunCommand[]>(() => loadRunCommands());
   const [packageScripts, setPackageScripts] = useState<PackageScript[]>([]);
+  const [packageManager, setPackageManager] = useState<'pnpm' | 'npm' | 'yarn' | 'bun'>('pnpm');
   const [packageError, setPackageError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState('');
@@ -1804,16 +1888,20 @@ function RunDebugPanel() {
     }
 
     const packagePath = joinPath(workspacePath, 'package.json');
-    window.electronAPI.readFile(packagePath)
-      .then((text) => {
+    Promise.all([
+      window.electronAPI.readFile(packagePath),
+      detectPackageManager(workspacePath),
+    ])
+      .then(([text, pm]) => {
         if (cancelled) return;
+        setPackageManager(pm);
         const parsed = JSON.parse(text);
         const scripts = parsed?.scripts && typeof parsed.scripts === 'object'
           ? Object.entries(parsed.scripts)
               .filter((entry): entry is [string, string] => (
                 typeof entry[0] === 'string' && typeof entry[1] === 'string'
               ))
-              .map(([name]) => ({ name, command: `pnpm run ${name}` }))
+              .map(([name]) => ({ name, command: scriptCommandFor(pm, name) }))
           : [];
         setPackageScripts(scripts);
         setPackageError(null);
@@ -1897,6 +1985,7 @@ function RunDebugPanel() {
             <>
               <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-forge-text/50 mb-1.5">
                 <span>Package Scripts</span>
+                <span className="text-forge-text/35 normal-case">{packageManager}</span>
                 <span>{packageScripts.length}</span>
               </div>
               <div className="space-y-1 mb-4">
@@ -2024,6 +2113,7 @@ function RunDebugPanel() {
               ['Codex', 'codex'],
               ['Claude Code', 'claude'],
               ['Cursor Agent', 'cursor-agent'],
+              ['Antigravity', 'agy'],
             ].map(([label, command]) => (
               <button
                 key={command}
@@ -2048,6 +2138,123 @@ function RunDebugPanel() {
       )}
     </div>
   );
+}
+
+function AgentsPanel() {
+  const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
+  const agentTerminalDock = useStore((s) => s.agentTerminalDock);
+  const setAgentTerminalDock = useStore((s) => s.setAgentTerminalDock);
+  const terminalSessions = useStore((s) => s.terminalSessions);
+  const agentSessions = terminalSessions.filter((session) => session.agentId);
+
+  const agents: Array<{
+    id: import('../types').AgentTerminalId;
+    label: string;
+    command: string;
+    icon: React.ReactNode;
+  }> = [
+    { id: 'codex', label: 'Codex', command: 'codex', icon: <FileCode2 size={14} /> },
+    { id: 'claude', label: 'Claude Code', command: 'claude', icon: <Sparkles size={14} /> },
+    { id: 'cursor-agent', label: 'Cursor Agent', command: 'cursor-agent', icon: <Bot size={14} /> },
+    { id: 'agy', label: 'Antigravity', command: 'agy', icon: <Orbit size={14} /> },
+  ];
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="h-[35px] flex items-center justify-between px-4 text-[11px] uppercase tracking-wide text-forge-text/70 flex-shrink-0">
+        <span>Agents</span>
+        <button
+          onClick={() => setAgentTerminalDock(agentTerminalDock === 'right' ? 'bottom' : 'right')}
+          title={agentTerminalDock === 'right' ? 'Move agent terminals to bottom' : 'Move agent terminals to right side'}
+          className="text-forge-text hover:text-forge-accent"
+        >
+          <PanelIcon dock={agentTerminalDock} />
+        </button>
+      </div>
+
+      <div className="px-3 pb-3 flex-shrink-0">
+        <div className="grid grid-cols-2 gap-2">
+          {agents.map((agent) => (
+            <button
+              key={agent.id}
+              onClick={() => runAgentInTerminal(agent.id)}
+              className="min-h-[58px] rounded border border-forge-border/50 bg-forge-input/35 hover:bg-forge-accent/10 hover:border-forge-accent/35 px-2 py-2 text-left transition-colors"
+            >
+              <span className="flex items-center gap-2 text-[12px] text-forge-text-strong">
+                <span className="text-forge-accent">{agent.icon}</span>
+                <span className="truncate">{agent.label}</span>
+              </span>
+              <span className="block mt-1 text-[10px] text-forge-text/45 truncate">
+                {agent.command}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="mt-2 flex rounded border border-forge-border/50 overflow-hidden text-[11px]">
+          <button
+            onClick={() => setAgentTerminalDock('right')}
+            className={`flex-1 py-1.5 ${agentTerminalDock === 'right' ? 'bg-forge-accent/15 text-forge-accent' : 'text-forge-text/60 hover:text-forge-text'}`}
+          >
+            Right
+          </button>
+          <button
+            onClick={() => setAgentTerminalDock('sidebar')}
+            className={`flex-1 py-1.5 border-l border-forge-border/50 ${agentTerminalDock === 'sidebar' ? 'bg-forge-accent/15 text-forge-accent' : 'text-forge-text/60 hover:text-forge-text'}`}
+          >
+            Sidebar
+          </button>
+          <button
+            onClick={() => setAgentTerminalDock('bottom')}
+            className={`flex-1 py-1.5 border-l border-forge-border/50 ${agentTerminalDock === 'bottom' ? 'bg-forge-accent/15 text-forge-accent' : 'text-forge-text/60 hover:text-forge-text'}`}
+          >
+            Bottom
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 border-t border-forge-border/40 relative overflow-hidden">
+        {agentTerminalDock === 'sidebar' ? (
+          <TerminalsPanel
+            visible
+            kind="agents"
+            showNew={false}
+            empty={
+              <div className="px-4 text-center leading-snug">
+                <div className="text-forge-text/60">No agent terminal running.</div>
+                <div className="mt-1 text-forge-text/35">Start Codex, Claude, Cursor or Antigravity.</div>
+              </div>
+            }
+          />
+        ) : agentTerminalDock === 'right' ? (
+          <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center text-forge-text/55 text-[12px]">
+            <TerminalIcon size={28} />
+            <p>Agent terminals are docked on the right side.</p>
+            <p className="text-[11px] text-forge-text/35">
+              Active agent sessions: {agentSessions.length}
+            </p>
+          </div>
+        ) : (
+          <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center text-forge-text/55 text-[12px]">
+            <TerminalIcon size={28} />
+            <p>Agent terminals are docked in the bottom panel.</p>
+            <p className="text-[11px] text-forge-text/35">
+              Active agent sessions: {agentSessions.length}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PanelIcon({ dock }: { dock: 'bottom' | 'sidebar' | 'right' }) {
+  if (dock === 'sidebar') return <PanelBottomIcon />;
+  if (dock === 'right') return <span className="inline-block w-[13px] h-[13px] border border-current rounded-sm border-r-[4px]" />;
+  return <TerminalIcon size={13} />;
+}
+
+function PanelBottomIcon() {
+  return <span className="inline-block w-[13px] h-[13px] border border-current rounded-sm border-l-[4px]" />;
 }
 
 interface SearchMatch {
@@ -2343,6 +2550,8 @@ export default function SideBar() {
         return <SourceControlPanel />;
       case 'debug':
         return <RunDebugPanel />;
+      case 'agents':
+        return <AgentsPanel />;
       case 'extensions':
         return <ExtensionsPanel />;
       case 'settings':

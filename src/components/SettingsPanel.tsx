@@ -115,6 +115,12 @@ export default function SettingsPanel() {
   const aiActiveModel = useStore((s) => s.aiActiveModel);
   const aiConfiguredProviders = useStore((s) => s.aiConfiguredProviders);
   const setBottomTab = useStore((s) => s.setBottomTab);
+  const aiPanelWidth = useStore((s) => s.aiPanelWidth);
+  const setAIPanelWidth = useStore((s) => s.setAIPanelWidth);
+  const agentTerminalDock = useStore((s) => s.agentTerminalDock);
+  const setAgentTerminalDock = useStore((s) => s.setAgentTerminalDock);
+  const rightPanelMaximized = useStore((s) => s.rightPanelMaximized);
+  const setRightPanelMaximized = useStore((s) => s.setRightPanelMaximized);
 
   const themeOptions = [
     { id: 'forge-dark', label: 'Forge Dark' },
@@ -275,6 +281,43 @@ export default function SettingsPanel() {
         </Section>
 
         <Section title="Terminal" icon={<Terminal size={14} />}>
+          <SettingRow
+            label="Agent Dock"
+            description="Where Codex, Claude, Cursor and Antigravity terminals open."
+          >
+            <select
+              value={agentTerminalDock}
+              onChange={(e) => setAgentTerminalDock(e.target.value as 'right' | 'sidebar' | 'bottom')}
+              className="bg-forge-input text-forge-text text-[12px] px-2 py-1 rounded border border-forge-border/60 outline-none focus:border-forge-accent/60"
+            >
+              <option value="right">Right side</option>
+              <option value="sidebar">Left sidebar</option>
+              <option value="bottom">Bottom panel</option>
+            </select>
+          </SettingRow>
+          <SettingRow
+            label="Right Panel Width"
+            description={`Default width ${aiPanelWidth}px.`}
+          >
+            <input
+              type="range"
+              min={280}
+              max={720}
+              value={aiPanelWidth}
+              onChange={(e) => setAIPanelWidth(Number(e.target.value))}
+              className="w-[130px]"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Right Panel Maximized"
+            description="Temporarily expands the AI workspace."
+          >
+            <Toggle
+              checked={rightPanelMaximized}
+              onChange={setRightPanelMaximized}
+              label="Right panel maximized"
+            />
+          </SettingRow>
           <SettingRow
             label="Integrated Terminal"
             description="Open the bottom panel terminal."

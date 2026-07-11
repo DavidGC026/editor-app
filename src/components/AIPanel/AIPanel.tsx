@@ -8,6 +8,7 @@ import {
   Code2,
   MessageSquare,
   MousePointer2,
+  Orbit,
 } from 'lucide-react';
 import { useStore } from '../../store';
 import ApiKeyModal from './ApiKeyModal';
@@ -132,6 +133,7 @@ function TopBar() {
     { id: 'codex', label: 'Run Codex', command: 'codex', icon: <Code2 size={14} /> },
     { id: 'claude', label: 'Run Claude Code', command: 'claude', icon: <MessageSquare size={14} /> },
     { id: 'cursor', label: 'Run Cursor Agent', command: 'cursor-agent', icon: <MousePointer2 size={14} /> },
+    { id: 'agy', label: 'Run Antigravity', command: 'agy', icon: <Orbit size={14} /> },
   ];
 
   return (
@@ -286,7 +288,7 @@ function NoInitBanner() {
   );
 }
 
-export default function AIPanel() {
+export default function AIPanel({ compact = false }: { compact?: boolean }) {
   const activeProvider = useStore((s) => s.aiActiveProvider);
   const activeModel = useStore((s) => s.aiActiveModel);
   const workspacePath = useStore((s) => s.workspacePath);
@@ -303,7 +305,7 @@ export default function AIPanel() {
 
   return (
     <div className="h-full w-full flex flex-col bg-forge-sidebar text-forge-text">
-      <TopBar />
+      {!compact && <TopBar />}
       {!providerReady ? (
         <EmptyState />
       ) : (

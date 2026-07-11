@@ -23,7 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import type { editor } from 'monaco-editor';
-import logoUrl from '../assets/forge-logo.png';
+import logoUrl from '../assets/dvg-logo.jpg';
 import { lspClient, getLspLanguageId } from '../lsp/client';
 import { attachMonaco as attachExtensionMonaco, isThemeAvailable } from '../extensions/registry';
 import ImageViewer from './ImageViewer';
@@ -149,10 +149,10 @@ function WorkspaceHome() {
         <section className="forge-home-hero">
           <div className="min-w-0">
             <div className="flex items-center gap-3 mb-5">
-              <img src={logoUrl} alt="Forge" className="w-10 h-10 object-contain" />
+              <img src={logoUrl} alt="DVG" className="w-10 h-10 object-contain" />
               <div>
                 <p className="text-[11px] uppercase tracking-[0.24em] text-forge-accent/80">
-                  Forge Workbench
+                  DVG Workbench
                 </p>
                 <h1 className="text-[34px] leading-tight font-semibold text-forge-text-strong">
                   {workspaceName || 'Code without ceremony'}
@@ -520,7 +520,7 @@ function TabBar() {
               ${isActive
                 ? 'bg-forge-tab-active'
                 : 'bg-forge-tabbar hover:bg-white/[0.03]'}
-              ${isDragTarget ? 'shadow-[inset_2px_0_0_0_#B65A48]' : ''}
+              ${isDragTarget ? 'shadow-[inset_2px_0_0_0_#E52E3D]' : ''}
             `}
           >
             {tab.isUnsaved && !tab.gitDiff && (
@@ -532,7 +532,7 @@ function TabBar() {
 
             <span
               className="truncate text-[13px]"
-              style={{ color: isActive ? '#B65A48' : '#96969D' }}
+              style={{ color: isActive ? '#E52E3D' : '#96969D' }}
             >
               {tab.name}
             </span>
@@ -545,7 +545,7 @@ function TabBar() {
                 }}
                 title="Unpin"
                 className="p-0.5 flex-shrink-0 opacity-70 hover:opacity-100"
-                style={{ color: isActive ? '#B65A48' : '#96969D' }}
+                style={{ color: isActive ? '#E52E3D' : '#96969D' }}
               >
                 <Pin size={12} />
               </button>
@@ -584,7 +584,7 @@ function TabBar() {
 function defineForgeTheme(monaco: typeof import('monaco-editor')) {
   // Forge-dark theme — brick-red primary palette.
   // Color reference:
-  //   Brick    #B65A48 — primary accent / cursor / active editor chrome
+  //   Crimson  #E52E3D — primary accent / cursor / active editor chrome
   //   Clay     #D06A55 — keywords / HTML tags / control flow
   //   Rose     #C98575 — strings / attribute values / properties
   //   Light    #ABB2BF — variables / identifiers / default text
@@ -714,14 +714,14 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       'editor.foreground': '#ABB2BF',
 
       // Cursor & selection
-      'editorCursor.foreground': '#B65A48',
+      'editorCursor.foreground': '#E52E3D',
       'editor.selectionBackground': '#3E4451',
       'editor.inactiveSelectionBackground': '#3E445199',
       'editor.selectionHighlightBackground': '#3E445166',
       'editor.wordHighlightBackground': '#3E445166',
       'editor.wordHighlightStrongBackground': '#3E445188',
-      'editor.findMatchBackground': '#B65A4844',
-      'editor.findMatchHighlightBackground': '#B65A4822',
+      'editor.findMatchBackground': '#E52E3D44',
+      'editor.findMatchHighlightBackground': '#E52E3D22',
 
       // Line numbers / gutter
       'editorLineNumber.foreground': '#636D83',
@@ -735,11 +735,11 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       // Whitespace / indent guides
       'editorWhitespace.foreground': '#3A3F4B',
       'editorIndentGuide.background': '#3A3F4B',
-      'editorIndentGuide.activeBackground': '#B65A4866',
+      'editorIndentGuide.activeBackground': '#E52E3D66',
 
       // Bracket matching
-      'editorBracketMatch.background': '#B65A4822',
-      'editorBracketMatch.border': '#B65A4888',
+      'editorBracketMatch.background': '#E52E3D22',
+      'editorBracketMatch.border': '#E52E3D88',
 
       // Widgets
       'editorWidget.background': '#24282E',
@@ -747,7 +747,7 @@ function defineForgeTheme(monaco: typeof import('monaco-editor')) {
       'editorSuggestWidget.background': '#24282E',
       'editorSuggestWidget.border': '#3A3F4B',
       'editorSuggestWidget.selectedBackground': '#3E4451',
-      'editorSuggestWidget.highlightForeground': '#B65A48',
+      'editorSuggestWidget.highlightForeground': '#E52E3D',
       'editorHoverWidget.background': '#24282E',
       'editorHoverWidget.border': '#3A3F4B',
 

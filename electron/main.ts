@@ -47,6 +47,9 @@ import {
   gitPull,
   gitDiffSummary,
   gitDiscard,
+  gitListBranches,
+  gitCheckoutBranch,
+  gitCreateBranch,
 } from './git';
 import {
   startDeviceFlow,
@@ -1451,6 +1454,21 @@ ipcMain.handle('git:pull', async (_event, workspacePath: string) => {
   return gitPull(workspacePath, currentGitAuth());
 });
 
+ipcMain.handle('git:branches', async (_event, workspacePath: string) => {
+  if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
+  return gitListBranches(workspacePath);
+});
+
+ipcMain.handle('git:checkoutBranch', async (_event, workspacePath: string, branchName: string) => {
+  if (!workspacePath || typeof branchName !== 'string') throw new Error('Argumentos inválidos.');
+  return gitCheckoutBranch(workspacePath, branchName);
+});
+
+ipcMain.handle('git:createBranch', async (_event, workspacePath: string, branchName: string) => {
+  if (!workspacePath || typeof branchName !== 'string') throw new Error('Argumentos inválidos.');
+  return gitCreateBranch(workspacePath, branchName);
+});
+
 ipcMain.handle('git:diff', async (_event, workspacePath: string, relPath: string, staged = false) => {
   if (!workspacePath || typeof relPath !== 'string') throw new Error('Argumentos inválidos.');
   return gitDiff(workspacePath, relPath, Boolean(staged));
@@ -1483,7 +1501,7 @@ ipcMain.handle('git:log', async (_event, workspacePath: string, relPath?: string
   );
 });
 
-// ── Extensions (VSIX: themes + snippets) ─────────────────────────────────
+// ── Extensions (VSIX / Open VSX) ───────────────────────────────────────────
 ipcMain.handle('ext:installVsix', async () => {
   return installVsix(mainWindow);
 });

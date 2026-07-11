@@ -16,7 +16,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { MarketplaceExtension } from '../types';
+import type { InstalledExtension, MarketplaceExtension } from '../types';
 
 function formatCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -36,7 +36,30 @@ function agentCommandForExtension(ext: MarketplaceExtension): string | null {
   if (haystack.includes('cursor agent') || normalized.includes('cursor-agent')) {
     return 'cursor-agent';
   }
+  if (haystack.includes('antigravity') || normalized.includes('antigravity') || normalized.includes('agy')) {
+    return 'agy';
+  }
   return null;
+}
+
+function extensionRuntimeLabel(ext: InstalledExtension): string {
+  if (ext.supported?.requiresExtensionHost) return 'Extension Host required';
+  if ((ext.supported?.declarative ?? []).length > 0) return 'Declarative';
+  return 'Metadata only';
+}
+
+function extensionCapabilitySummary(ext: InstalledExtension): string {
+  const declarative = ext.supported?.declarative ?? [];
+  const parts: string[] = [];
+  if (declarative.length > 0) {
+    parts.push(`supported: ${declarative.join(', ')}`);
+  }
+  if (ext.contributes.length > 0) {
+    const preview = ext.contributes.slice(0, 4).join(', ');
+    parts.push(`contributes: ${preview}${ext.contributes.length > 4 ? ` +${ext.contributes.length - 4}` : ''}`);
+  }
+  if (parts.length === 0) return 'installed package metadata';
+  return parts.join(' · ');
 }
 
 export default function ExtensionsPanel() {
@@ -230,7 +253,7 @@ export default function ExtensionsPanel() {
                       )}
                       {agentCommand && (
                         <p className="mt-1 text-[10px] leading-snug text-forge-accent/80">
-                          Runs as a Forge terminal agent; VS Code extension hosts are not supported.
+                          Runs through Forge terminal agents while extension-host support is built out.
                         </p>
                       )}
 
@@ -287,30 +310,54 @@ export default function ExtensionsPanel() {
               <p className="text-[11px]">No extensions installed</p>
             </div>
           ) : (
-            installedExtensions.map((ext) => (
-              <div
-                key={ext.id}
-                className="group rounded px-2 py-1.5 hover:bg-white/5 transition-colors"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] text-forge-text-strong truncate">
-                    {ext.displayName}
-                  </span>
-                  <button
-                    title="Uninstall"
-                    onClick={() => void uninstallExtension(ext.id)}
-                    className="opacity-0 group-hover:opacity-70 hover:!opacity-100 text-forge-text flex-shrink-0"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+            installedExtensions.map((ext) => {
+              const runtimeLabel = extensionRuntimeLabel(ext);
+              const capabilitySummary = extensionCapabilitySummary(ext);
+              const runtimeTone = ext.supported?.requiresExtensionHost
+                ? 'border-amber-400/25 bg-amber-400/10 text-amber-200/90'
+                : (ext.supported?.declarative ?? []).length > 0
+                  ? 'border-forge-accent/25 bg-forge-accent/10 text-forge-accent'
+                  : 'border-forge-border/70 bg-forge-input/70 text-forge-text/55';
+
+              return (
+                <div
+                  key={ext.id}
+                  className="group rounded px-2 py-1.5 hover:bg-white/5 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12px] text-forge-text-strong truncate">
+                      {ext.displayName}
+                    </span>
+                    <button
+                      title="Uninstall"
+                      onClick={() => void uninstallExtension(ext.id)}
+                      className="opacity-0 group-hover:opacity-70 hover:!opacity-100 text-forge-text flex-shrink-0"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
+                    <span className={`px-1.5 py-0.5 rounded border text-[9px] uppercase tracking-wide flex-shrink-0 ${runtimeTone}`}>
+                      {runtimeLabel}
+                    </span>
+                    <span className="text-[10px] text-forge-text/45 truncate">
+                      {ext.publisher} · v{ext.version}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[10px] text-forge-text/45 truncate">
+                    {capabilitySummary}
+                  </div>
+                  {(ext.main || ext.browser || ext.activationEvents.length > 0) && (
+                    <div className="mt-0.5 text-[10px] text-forge-text/35 truncate">
+                      {ext.main && `main: ${ext.main}`}
+                      {ext.browser && `${ext.main ? ' · ' : ''}browser: ${ext.browser}`}
+                      {ext.activationEvents.length > 0 &&
+                        `${ext.main || ext.browser ? ' · ' : ''}${ext.activationEvents.length} activation event${ext.activationEvents.length === 1 ? '' : 's'}`}
+                    </div>
+                  )}
                 </div>
-                <div className="text-[10px] text-forge-text/45 truncate">
-                  {ext.publisher} · v{ext.version}
-                  {ext.themes.length > 0 && ` · ${ext.themes.length} theme${ext.themes.length > 1 ? 's' : ''}`}
-                  {ext.snippets.length > 0 && ` · snippets`}
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

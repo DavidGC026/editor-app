@@ -175,7 +175,7 @@ export interface ElectronAPI {
     ) => Promise<{ original: string; modified: string }>;
     log: (workspacePath: string, relPath?: string, limit?: number) => Promise<any[]>;
   };
-  // Extensions (VSIX: themes + snippets)
+  // Extensions (VSIX / Open VSX)
   ext: {
     installVsix: () => Promise<any | null>;
     installFromOpenVsx: (extensionId: string) => Promise<any>;
@@ -473,6 +473,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('git:commit', workspacePath, message),
     push: (workspacePath: string) => ipcRenderer.invoke('git:push', workspacePath),
     pull: (workspacePath: string) => ipcRenderer.invoke('git:pull', workspacePath),
+    branches: (workspacePath: string) => ipcRenderer.invoke('git:branches', workspacePath),
+    checkoutBranch: (workspacePath: string, branchName: string) =>
+      ipcRenderer.invoke('git:checkoutBranch', workspacePath, branchName),
+    createBranch: (workspacePath: string, branchName: string) =>
+      ipcRenderer.invoke('git:createBranch', workspacePath, branchName),
     diffSummary: (workspacePath: string) => ipcRenderer.invoke('git:diffSummary', workspacePath),
     discard: (workspacePath: string, relPaths: string[]) =>
       ipcRenderer.invoke('git:discard', workspacePath, relPaths),

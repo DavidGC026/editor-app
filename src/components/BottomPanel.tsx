@@ -88,12 +88,14 @@ function TerminalSessionTabs({
   onSelect,
   onClose,
   onNew,
+  showNew = true,
 }: {
   sessions: TerminalSession[];
   activeSessionId: string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
+  showNew?: boolean;
 }) {
   return (
     <div className="h-[28px] flex items-center gap-0.5 px-1 border-b border-forge-border/30 bg-[#1A1B20] overflow-x-auto sidebar-scroll flex-shrink-0">
@@ -126,13 +128,15 @@ function TerminalSessionTabs({
           </div>
         );
       })}
-      <button
-        onClick={onNew}
-        title="New terminal"
-        className="h-[24px] w-[24px] flex items-center justify-center rounded text-forge-text/50 hover:text-forge-accent hover:bg-white/5 flex-shrink-0"
-      >
-        <Plus size={13} />
-      </button>
+      {showNew && (
+        <button
+          onClick={onNew}
+          title="New terminal"
+          className="h-[24px] w-[24px] flex items-center justify-center rounded text-forge-text/50 hover:text-forge-accent hover:bg-white/5 flex-shrink-0"
+        >
+          <Plus size={13} />
+        </button>
+      )}
     </div>
   );
 }
@@ -193,9 +197,9 @@ function XTermView({ sessionId, visible }: { sessionId: string; visible: boolean
       theme: {
         background: '#1F2025',
         foreground: '#B1B4BC',
-        cursor: '#B65A48',
+        cursor: '#E52E3D',
         cursorAccent: '#1F2025',
-        selectionBackground: '#B65A4844',
+        selectionBackground: '#E52E3D44',
         black: '#1F2025',
         brightBlack: '#5A5F6E',
         red: '#FF5370',
@@ -383,53 +387,76 @@ function XTermView({ sessionId, visible }: { sessionId: string; visible: boolean
   );
 }
 
-function TerminalsPanel() {
+export function TerminalsPanel({
+  visible,
+  kind = 'all',
+  showNew = true,
+  hideTabs = false,
+  sessionId,
+  empty,
+}: {
+  visible: boolean;
+  kind?: 'all' | 'normal' | 'agents';
+  showNew?: boolean;
+  hideTabs?: boolean;
+  sessionId?: string | null;
+  empty?: React.ReactNode;
+}) {
   const terminalSessions = useStore((s) => s.terminalSessions);
   const activeTerminalSessionId = useStore((s) => s.activeTerminalSessionId);
-  const activeBottomTab = useStore((s) => s.activeBottomTab);
   const ensureTerminalSession = useStore((s) => s.ensureTerminalSession);
   const createTerminalSession = useStore((s) => s.createTerminalSession);
   const closeTerminalSession = useStore((s) => s.closeTerminalSession);
   const setActiveTerminalSession = useStore((s) => s.setActiveTerminalSession);
 
   useEffect(() => {
-    if (terminalSessions.length === 0) {
+    if ((kind === 'all' || kind === 'normal') && terminalSessions.filter((s) => kind === 'all' || !s.agentId).length === 0) {
       ensureTerminalSession();
     }
-  }, [terminalSessions.length, ensureTerminalSession]);
+  }, [terminalSessions, ensureTerminalSession, kind]);
 
-  const visible = activeBottomTab === 'terminal';
-  const sessions = terminalSessions;
+  const sessions = terminalSessions.filter((session) => {
+    if (sessionId && session.id !== sessionId) return false;
+    if (kind === 'agents') return Boolean(session.agentId);
+    if (kind === 'normal') return !session.agentId;
+    return true;
+  });
+  const activeSessionId = sessions.some((session) => session.id === activeTerminalSessionId)
+    ? activeTerminalSessionId
+    : sessions[0]?.id ?? null;
   if (sessions.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-forge-text/50 text-[12px]">
-        Starting terminal…
+        {empty ?? 'Starting terminal…'}
       </div>
     );
   }
 
   return (
     <div className="absolute inset-0 flex flex-col">
-      <TerminalSessionTabs
-        sessions={sessions}
-        activeSessionId={activeTerminalSessionId}
-        onSelect={setActiveTerminalSession}
-        onClose={closeTerminalSession}
-        onNew={() => createTerminalSession()}
-      />
+      {!hideTabs && (
+        <TerminalSessionTabs
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSelect={setActiveTerminalSession}
+          onClose={closeTerminalSession}
+          onNew={() => createTerminalSession()}
+          showNew={showNew}
+        />
+      )}
       <div className="flex-1 min-h-0 relative">
-        {terminalSessions.map((session) => (
+        {sessions.map((session) => (
           <div
             key={session.id}
             className="absolute inset-0"
             style={{
               display:
-                visible && session.id === activeTerminalSessionId ? 'block' : 'none',
+                visible && session.id === activeSessionId ? 'block' : 'none',
             }}
           >
             <XTermView
               sessionId={session.id}
-              visible={visible && session.id === activeTerminalSessionId}
+              visible={visible && session.id === activeSessionId}
             />
           </div>
         ))}
@@ -443,6 +470,7 @@ export default function BottomPanel() {
   const setBottomTab = useStore((s) => s.setBottomTab);
   const togglePanel = useStore((s) => s.togglePanel);
   const bottomPanelHeight = useStore((s) => s.bottomPanelHeight);
+  const agentTerminalDock = useStore((s) => s.agentTerminalDock);
 
   return (
     <div
@@ -483,7 +511,10 @@ export default function BottomPanel() {
           className="absolute inset-0 flex flex-col"
           style={{ display: activeBottomTab === 'terminal' ? 'flex' : 'none' }}
         >
-          <TerminalsPanel />
+          <TerminalsPanel
+            visible={activeBottomTab === 'terminal'}
+            kind={agentTerminalDock === 'bottom' ? 'all' : 'normal'}
+          />
         </div>
 
         {activeBottomTab === 'problems' && (

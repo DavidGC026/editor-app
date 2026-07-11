@@ -26,7 +26,7 @@ export default function StatusBar() {
 
   const showPort = liveServerActive && liveServerPort != null;
   const liveServerLabel = showPort ? `Puerto: ${liveServerPort}` : 'Live Server';
-  const liveServerColor = liveServerActive ? '#B65A48' : '#A1A3AF';
+  const liveServerColor = liveServerActive ? '#E52E3D' : '#A1A3AF';
   const liveServerTitle = liveServerActive
     ? `Live Server activo en ${liveServerUrl || `http://localhost:${liveServerPort}`} — clic para detener`
     : 'Live Server inactivo — clic para iniciar (requiere archivo HTML)';

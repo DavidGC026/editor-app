@@ -37,6 +37,12 @@ export interface GitLogEntry {
   subject: string;
 }
 
+export interface GitBranchEntry {
+  name: string;
+  current: boolean;
+  remote: boolean;
+}
+
 function runGit(
   cwd: string,
   args: string[],
@@ -352,6 +358,47 @@ export async function gitPull(workspacePath: string, auth?: GitAuth): Promise<st
     }
     throw friendlyRemoteError(err);
   }
+}
+
+export async function gitListBranches(workspacePath: string): Promise<GitBranchEntry[]> {
+  const stdout = await gitOrThrow(workspacePath, [
+    'for-each-ref',
+    '--format=%(refname:short)%00%(HEAD)%00%(refname)',
+    'refs/heads',
+    'refs/remotes',
+  ]);
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [name = '', head = '', ref = ''] = line.split('\0');
+      return {
+        name,
+        current: head === '*',
+        remote: ref.startsWith('refs/remotes/'),
+      };
+    })
+    .filter((branch) => branch.name && !branch.name.endsWith('/HEAD'));
+}
+
+export async function gitCheckoutBranch(workspacePath: string, branchName: string): Promise<string> {
+  const name = branchName.trim();
+  if (!name) throw new Error('Nombre de rama requerido.');
+  const localExists = (await runGit(workspacePath, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`])).code === 0;
+  const remoteExists = (await runGit(workspacePath, ['show-ref', '--verify', '--quiet', `refs/remotes/${name}`])).code === 0;
+  if (!localExists && remoteExists) {
+    return (await gitOrThrow(workspacePath, ['checkout', '--track', name])).trim();
+  }
+  return (await gitOrThrow(workspacePath, ['checkout', name])).trim();
+}
+
+export async function gitCreateBranch(workspacePath: string, branchName: string): Promise<string> {
+  const name = branchName.trim();
+  if (!/^[A-Za-z0-9._/-]+$/.test(name)) {
+    throw new Error('Nombre de rama inválido. Usa letras, números, ".", "_", "-" o "/".');
+  }
+  return (await gitOrThrow(workspacePath, ['checkout', '-b', name])).trim();
 }
 
 export async function gitDiff(

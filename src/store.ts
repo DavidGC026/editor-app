@@ -15,6 +15,7 @@ import {
   InstalledExtension,
   MarketplaceSearchResult,
   GitChange,
+  GitBranchEntry,
   GitLogEntry,
   Problem,
   AgentTerminalId,
@@ -76,10 +77,12 @@ interface EditorState {
   sidebarWidth: number;
   /** Height of the bottom panel (terminal), in CSS pixels. */
   bottomPanelHeight: number;
+  rightPanelMaximized: boolean;
 
   // Terminal
   terminalSessions: TerminalSession[];
   activeTerminalSessionId: string | null;
+  agentTerminalDock: 'bottom' | 'sidebar' | 'right';
 
   // Editor state
   cursorPosition: CursorPosition;
@@ -194,6 +197,7 @@ interface EditorState {
   // ── Git (Source Control) ────────────────────────────────────────────
   gitIsRepo: boolean;
   gitBranch: string | null;
+  gitBranches: GitBranchEntry[];
   gitChanges: GitChange[];
   /** Commits pendientes de push respecto al upstream. */
   gitAhead: number;
@@ -207,6 +211,9 @@ interface EditorState {
   gitSyncBusy: boolean;
   gitError: string | null;
   refreshGitStatus: () => Promise<void>;
+  refreshGitBranches: () => Promise<void>;
+  gitCheckoutBranch: (branchName: string) => Promise<boolean>;
+  gitCreateBranch: (branchName: string) => Promise<boolean>;
   gitStageFiles: (relPaths: string[]) => Promise<void>;
   gitUnstageFiles: (relPaths: string[]) => Promise<void>;
   /** Commits staged changes. Resolves true on success. */
@@ -239,13 +246,14 @@ interface EditorState {
   updateProblemsForFile: (filePath: string, problems: Problem[]) => void;
   clearProblems: () => void;
 
-  // ── Extensions (VSIX: themes + snippets) ────────────────────────────
-  /** Extensions installed from .vsix files (themes + snippets only). */
+  // ── Extensions (VSIX / Open VSX) ────────────────────────────────────
+  /** Extensions installed from VSIX/Open VSX. Forge activates supported
+   *  declarative contributions and keeps the rest as package metadata. */
   installedExtensions: InstalledExtension[];
   /** Monaco theme id currently applied to the editor. */
   activeTheme: string;
-  /** Load the installed-extension list from the main process and wire the
-   *  themes/snippets into Monaco. Called once on startup. */
+  /** Load the installed-extension list from the main process and wire
+   *  supported contributions into Monaco. Called once on startup. */
   refreshExtensions: () => Promise<void>;
   /** True while a VSIX is being installed (file picker or Open VSX). */
   extBusy: boolean;
@@ -309,6 +317,7 @@ interface EditorState {
   setBottomTab: (tab: BottomTab) => void;
   setSidebarWidth: (width: number) => void;
   setBottomPanelHeight: (height: number) => void;
+  setRightPanelMaximized: (maximized: boolean) => void;
   ensureTerminalSession: () => string;
   createTerminalSession: (label?: string) => string;
   closeTerminalSession: (sessionId: string) => void;
@@ -318,6 +327,7 @@ interface EditorState {
   runCommandInTerminal: (command: string) => void;
   /** Opens or focuses a dedicated terminal for an agent CLI. */
   runAgentInTerminal: (agentId: AgentTerminalId) => void;
+  setAgentTerminalDock: (dock: 'bottom' | 'sidebar' | 'right') => void;
   /** Send `cd "<path>"` (newline-appended) to the currently-active pty. */
   sendCdToActiveTerminal: (workspacePath: string) => void;
   setCursorPosition: (pos: CursorPosition) => void;
@@ -520,6 +530,7 @@ const MIN_EDITOR_FONT_SIZE = 8;
 const MAX_EDITOR_FONT_SIZE = 32;
 const EDITOR_FONT_SIZE_STEP = 1;
 const SETTINGS_STORAGE_KEY = 'forge.editorSettings.v1';
+const LAYOUT_STORAGE_KEY = 'forge.layout.v1';
 
 interface PersistedEditorSettings {
   autoSave: boolean;
@@ -603,6 +614,51 @@ function persistEditorSettings(settings: PersistedEditorSettings): void {
 
 const initialEditorSettings = loadEditorSettings();
 
+interface PersistedLayoutSettings {
+  sidebarWidth: number;
+  bottomPanelHeight: number;
+  aiPanelWidth: number;
+  agentTerminalDock: 'bottom' | 'sidebar' | 'right';
+  rightPanelMaximized: boolean;
+}
+
+const DEFAULT_LAYOUT_SETTINGS: PersistedLayoutSettings = {
+  sidebarWidth: 250,
+  bottomPanelHeight: 260,
+  aiPanelWidth: 360,
+  agentTerminalDock: 'right',
+  rightPanelMaximized: false,
+};
+
+function loadLayoutSettings(): PersistedLayoutSettings {
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return DEFAULT_LAYOUT_SETTINGS;
+    const parsed = JSON.parse(raw);
+    const dock = parsed?.agentTerminalDock;
+    return {
+      sidebarWidth: Math.max(150, Math.min(500, Math.round(Number(parsed?.sidebarWidth ?? 250)))),
+      bottomPanelHeight: Math.max(100, Math.round(Number(parsed?.bottomPanelHeight ?? 260))),
+      aiPanelWidth: Math.max(280, Math.min(720, Math.round(Number(parsed?.aiPanelWidth ?? 360)))),
+      agentTerminalDock: dock === 'bottom' || dock === 'sidebar' || dock === 'right' ? dock : 'right',
+      rightPanelMaximized: Boolean(parsed?.rightPanelMaximized),
+    };
+  } catch {
+    return DEFAULT_LAYOUT_SETTINGS;
+  }
+}
+
+function persistLayoutSettings(patch: Partial<PersistedLayoutSettings>): void {
+  try {
+    const current = loadLayoutSettings();
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ ...current, ...patch }));
+  } catch {
+    /* best-effort */
+  }
+}
+
+const initialLayoutSettings = loadLayoutSettings();
+
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let autoSaveTabId: string | null = null;
 
@@ -610,6 +666,7 @@ const AGENT_TERMINAL_CONFIG: Record<AgentTerminalId, { label: string; command: s
   codex: { label: 'Codex', command: 'codex' },
   claude: { label: 'Claude Code', command: 'claude' },
   'cursor-agent': { label: 'Cursor Agent', command: 'cursor-agent' },
+  agy: { label: 'Antigravity', command: 'agy' },
 };
 
 function buildTerminalCommand(workspacePath: string | null, command: string): string {
@@ -635,10 +692,12 @@ export const useStore = create<EditorState>((set, get) => ({
   bottomPanelVisible: false,
   activeSidebarPanel: 'explorer',
   activeBottomTab: 'terminal',
-  sidebarWidth: 250,
-  bottomPanelHeight: 260,
+  sidebarWidth: initialLayoutSettings.sidebarWidth,
+  bottomPanelHeight: initialLayoutSettings.bottomPanelHeight,
+  rightPanelMaximized: initialLayoutSettings.rightPanelMaximized,
   terminalSessions: [],
   activeTerminalSessionId: null,
+  agentTerminalDock: initialLayoutSettings.agentTerminalDock,
   cursorPosition: { line: 1, column: 1 },
   commandPaletteOpen: false,
   editorFontSize: initialEditorSettings.editorFontSize,
@@ -658,7 +717,7 @@ export const useStore = create<EditorState>((set, get) => ({
 
   // AI panel initial state
   aiPanelVisible: false,
-  aiPanelWidth: 360,
+  aiPanelWidth: initialLayoutSettings.aiPanelWidth,
   aiApiKeyModalOpen: false,
   aiConfiguredProviders: [],
   aiActiveProvider: null,
@@ -681,6 +740,7 @@ export const useStore = create<EditorState>((set, get) => ({
   // Git initial state
   gitIsRepo: false,
   gitBranch: null,
+  gitBranches: [],
   gitChanges: [],
   gitAhead: 0,
   gitBehind: 0,
@@ -713,6 +773,7 @@ export const useStore = create<EditorState>((set, get) => ({
     const empty = {
       gitIsRepo: false,
       gitBranch: null,
+      gitBranches: [] as GitBranchEntry[],
       gitChanges: [] as GitChange[],
       gitAhead: 0,
       gitBehind: 0,
@@ -734,9 +795,56 @@ export const useStore = create<EditorState>((set, get) => ({
         gitHasUpstream: Boolean(status.hasUpstream),
         gitHasRemote: Boolean(status.hasRemote),
       });
+      void get().refreshGitBranches();
     } catch (err) {
       console.warn('[forge] git status failed:', (err as Error).message);
       set(empty);
+    }
+  },
+
+  refreshGitBranches: async () => {
+    const { workspacePath, gitIsRepo } = get();
+    if (!workspacePath || !gitIsRepo || !window.electronAPI?.git) {
+      set({ gitBranches: [] });
+      return;
+    }
+    try {
+      const branches = await window.electronAPI.git.branches(workspacePath);
+      set({ gitBranches: branches });
+    } catch {
+      set({ gitBranches: [] });
+    }
+  },
+
+  gitCheckoutBranch: async (branchName: string) => {
+    const { workspacePath } = get();
+    if (!workspacePath || !branchName.trim()) return false;
+    set({ gitBusy: true, gitError: null });
+    try {
+      await window.electronAPI.git.checkoutBranch(workspacePath, branchName);
+      return true;
+    } catch (err) {
+      set({ gitError: cleanIpcError((err as Error).message) });
+      return false;
+    } finally {
+      set({ gitBusy: false });
+      await get().refreshGitStatus();
+    }
+  },
+
+  gitCreateBranch: async (branchName: string) => {
+    const { workspacePath } = get();
+    if (!workspacePath || !branchName.trim()) return false;
+    set({ gitBusy: true, gitError: null });
+    try {
+      await window.electronAPI.git.createBranch(workspacePath, branchName);
+      return true;
+    } catch (err) {
+      set({ gitError: cleanIpcError((err as Error).message) });
+      return false;
+    } finally {
+      set({ gitBusy: false });
+      await get().refreshGitStatus();
     }
   },
 
@@ -1126,6 +1234,7 @@ export const useStore = create<EditorState>((set, get) => ({
   },
   setAIPanelWidth: (width: number) => {
     const clamped = Math.max(280, Math.min(720, Math.round(width)));
+    persistLayoutSettings({ aiPanelWidth: clamped });
     set({ aiPanelWidth: clamped });
   },
   setAIApiKeyModalOpen: (open: boolean) => set({ aiApiKeyModalOpen: open }),
@@ -1951,6 +2060,7 @@ export const useStore = create<EditorState>((set, get) => ({
       // Reset Source Control state.
       gitIsRepo: false,
       gitBranch: null,
+      gitBranches: [],
       gitChanges: [],
       gitError: null,
       problems: [],
@@ -1988,13 +2098,21 @@ export const useStore = create<EditorState>((set, get) => ({
   setSidebarWidth: (width: number) => {
     // Clamp to sane bounds matching the divider behaviour in App.tsx.
     const clamped = Math.max(150, Math.min(500, Math.round(width)));
+    persistLayoutSettings({ sidebarWidth: clamped });
     set({ sidebarWidth: clamped });
   },
 
   setBottomPanelHeight: (height: number) => {
     // App.tsx is responsible for clamping against the available viewport
     // height (it knows the dynamic max). We just round to integer pixels.
-    set({ bottomPanelHeight: Math.max(100, Math.round(height)) });
+    const next = Math.max(100, Math.round(height));
+    persistLayoutSettings({ bottomPanelHeight: next });
+    set({ bottomPanelHeight: next });
+  },
+
+  setRightPanelMaximized: (maximized: boolean) => {
+    persistLayoutSettings({ rightPanelMaximized: maximized });
+    set({ rightPanelMaximized: maximized });
   },
 
   ensureTerminalSession: () => {
@@ -2055,10 +2173,15 @@ export const useStore = create<EditorState>((set, get) => ({
   },
 
   setActiveTerminalSession: (sessionId: string) => {
+    const session = get().terminalSessions.find((s) => s.id === sessionId);
+    const dock = get().agentTerminalDock;
     set({
       activeTerminalSessionId: sessionId,
-      bottomPanelVisible: true,
-      activeBottomTab: 'terminal',
+      ...(session?.agentId && dock === 'sidebar'
+        ? { activeSidebarPanel: 'agents' as SidebarPanel, sidebarVisible: true }
+        : session?.agentId && dock === 'right'
+          ? {}
+          : { bottomPanelVisible: true, activeBottomTab: 'terminal' as BottomTab }),
     });
   },
 
@@ -2116,7 +2239,12 @@ export const useStore = create<EditorState>((set, get) => ({
     const trimmed = command.trim();
     if (!trimmed) return;
     set({ bottomPanelVisible: true, activeBottomTab: 'terminal' });
-    const sessionId = get().activeTerminalSessionId ?? get().ensureTerminalSession();
+    const state = get();
+    const activeNormal = state.terminalSessions.find((s) => (
+      s.id === state.activeTerminalSessionId && !s.agentId
+    ));
+    const firstNormal = state.terminalSessions.find((s) => !s.agentId);
+    const sessionId = activeNormal?.id ?? firstNormal?.id ?? get().createTerminalSession();
     get().setActiveTerminalSession(sessionId);
     get().runCommandInTerminalSession(sessionId, trimmed);
   },
@@ -2144,15 +2272,31 @@ export const useStore = create<EditorState>((set, get) => ({
       isNew = true;
     }
 
+    const dock = get().agentTerminalDock;
     set({
       activeTerminalSessionId: sessionId,
-      bottomPanelVisible: true,
-      activeBottomTab: 'terminal',
+      ...(dock === 'sidebar'
+        ? { activeSidebarPanel: 'agents' as SidebarPanel, sidebarVisible: true }
+        : dock === 'right'
+          ? {}
+        : { bottomPanelVisible: true, activeBottomTab: 'terminal' as BottomTab }),
     });
 
     if (isNew) {
       get().runCommandInTerminalSession(sessionId, cfg.command);
     }
+  },
+
+  setAgentTerminalDock: (dock: 'bottom' | 'sidebar' | 'right') => {
+    persistLayoutSettings({ agentTerminalDock: dock });
+    set((state) => ({
+      agentTerminalDock: dock,
+      ...(dock === 'sidebar'
+        ? { activeSidebarPanel: 'agents' as SidebarPanel, sidebarVisible: true }
+        : dock === 'bottom' && state.terminalSessions.some((s) => s.agentId)
+          ? { bottomPanelVisible: true, activeBottomTab: 'terminal' as BottomTab }
+          : {}),
+    }));
   },
 
   sendCdToActiveTerminal: (workspacePath: string) => {

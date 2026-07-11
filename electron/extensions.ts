@@ -1,10 +1,13 @@
 // ── VSIX extension manager (main process) ──────────────────────────────
 //
-// Forge supports a small, safe subset of the VSCode extension surface:
-// declarative contributions that don't require running extension code.
+// Forge installs complete VSIX packages and currently activates the safe,
+// declarative subset that doesn't require running extension code.
 //
-//   contributes.themes    → color themes (converted to Monaco in renderer)
-//   contributes.snippets  → completion snippets per language
+//   contributes.themes    -> color themes (converted to Monaco in renderer)
+//   contributes.snippets  -> completion snippets per language
+//
+// Everything else is preserved as manifest metadata so the UI can expose
+// what is installed and what needs a future extension host / VSCode API shim.
 //
 // A .vsix is just a ZIP with the extension under `extension/`. We extract
 // it into userData/extensions/<publisher.name>/ and keep a registry in the
@@ -41,6 +44,16 @@ export interface InstalledExtensionPayload {
   publisher: string;
   version: string;
   description: string;
+  categories: string[];
+  activationEvents: string[];
+  extensionKind: string[];
+  main: string | null;
+  browser: string | null;
+  contributes: string[];
+  supported: {
+    declarative: string[];
+    requiresExtensionHost: boolean;
+  };
   themes: ExtensionThemePayload[];
   snippets: ExtensionSnippetsPayload[];
 }
@@ -72,6 +85,12 @@ interface RegistryEntry {
   publisher: string;
   version: string;
   description: string;
+  categories: string[];
+  activationEvents: string[];
+  extensionKind: string[];
+  main: string | null;
+  browser: string | null;
+  contributes: string[];
   /** Directory (under userData/extensions) the vsix was extracted into. */
   dir: string;
   themes: { label: string; uiTheme: string; path: string }[];
@@ -231,6 +250,19 @@ function entryToPayload(entry: RegistryEntry): InstalledExtensionPayload {
     publisher: entry.publisher,
     version: entry.version,
     description: entry.description,
+    categories: entry.categories || [],
+    activationEvents: entry.activationEvents || [],
+    extensionKind: entry.extensionKind || [],
+    main: entry.main || null,
+    browser: entry.browser || null,
+    contributes: entry.contributes || [],
+    supported: {
+      declarative: [
+        ...(entry.themes.length > 0 ? ['themes'] : []),
+        ...(entry.snippets.length > 0 ? ['snippets'] : []),
+      ],
+      requiresExtensionHost: Boolean(entry.main || entry.browser || (entry.activationEvents || []).length > 0),
+    },
     themes,
     snippets,
   };
@@ -319,14 +351,20 @@ export function installVsixFromPath(vsixPath: string): InstalledExtensionPayload
     }
   }
 
-  if (themes.length === 0 && snippets.length === 0) {
-    // Nothing Forge can use — clean up and tell the user why.
-    fs.rmSync(destDir, { recursive: true, force: true });
-    throw new Error(
-      'Esta extensión no aporta temas ni snippets. Forge todavía no ejecuta código de extensiones ' +
-        '(la mayoría de extensiones de lenguaje son wrappers de un language server — esa integración va por LSP).',
-    );
-  }
+  const contributesKeys = contributes && typeof contributes === 'object'
+    ? Object.keys(contributes).sort()
+    : [];
+  const categories = Array.isArray(manifest.categories)
+    ? manifest.categories.filter((c: unknown): c is string => typeof c === 'string')
+    : [];
+  const activationEvents = Array.isArray(manifest.activationEvents)
+    ? manifest.activationEvents.filter((e: unknown): e is string => typeof e === 'string')
+    : [];
+  const extensionKind = Array.isArray(manifest.extensionKind)
+    ? manifest.extensionKind.filter((k: unknown): k is string => typeof k === 'string')
+    : typeof manifest.extensionKind === 'string'
+      ? [manifest.extensionKind]
+      : [];
 
   const entry: RegistryEntry = {
     id,
@@ -334,6 +372,12 @@ export function installVsixFromPath(vsixPath: string): InstalledExtensionPayload
     publisher,
     version: typeof manifest.version === 'string' ? manifest.version : '0.0.0',
     description: typeof manifest.description === 'string' ? manifest.description : '',
+    categories,
+    activationEvents,
+    extensionKind,
+    main: typeof manifest.main === 'string' ? manifest.main : null,
+    browser: typeof manifest.browser === 'string' ? manifest.browser : null,
+    contributes: contributesKeys,
     dir: destDir,
     themes,
     snippets,

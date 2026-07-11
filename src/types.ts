@@ -66,13 +66,13 @@ export function isHtmlFile(filePath: string): boolean {
 }
 
 // ── Sidebar Panel Types ────────────────────────────────────────────────
-export type SidebarPanel = 'explorer' | 'search' | 'git' | 'debug' | 'extensions' | 'settings';
+export type SidebarPanel = 'explorer' | 'search' | 'git' | 'debug' | 'extensions' | 'settings' | 'agents';
 
 // ── Bottom Panel Tab Types ─────────────────────────────────────────────
 export type BottomTab = 'terminal' | 'problems' | 'output' | 'debug';
 
-/** Dedicated agent CLI terminals (Codex, Claude Code, Cursor Agent). */
-export type AgentTerminalId = 'codex' | 'claude' | 'cursor-agent';
+/** Dedicated agent CLI terminals (Codex, Claude Code, Cursor Agent, Antigravity). */
+export type AgentTerminalId = 'codex' | 'claude' | 'cursor-agent' | 'agy';
 
 export interface TerminalSession {
   /** Client-side session id (stable across pty restarts). */
@@ -320,7 +320,13 @@ export interface GitLogEntry {
   subject: string;
 }
 
-// ── Extensions (VSIX: themes + snippets) ───────────────────────────────
+export interface GitBranchEntry {
+  name: string;
+  current: boolean;
+  remote: boolean;
+}
+
+// ── Extensions (VSIX / Open VSX) ───────────────────────────────────────
 
 export interface ExtensionTheme {
   /** Monaco-safe theme id (unique across extensions). */
@@ -354,6 +360,16 @@ export interface InstalledExtension {
   publisher: string;
   version: string;
   description: string;
+  categories: string[];
+  activationEvents: string[];
+  extensionKind: string[];
+  main: string | null;
+  browser: string | null;
+  contributes: string[];
+  supported: {
+    declarative: string[];
+    requiresExtensionHost: boolean;
+  };
   themes: ExtensionTheme[];
   snippets: ExtensionSnippets[];
 }
@@ -553,6 +569,9 @@ export interface ElectronAPI {
     push: (workspacePath: string) => Promise<string>;
     /** Pull --ff-only from the upstream. */
     pull: (workspacePath: string) => Promise<string>;
+    branches: (workspacePath: string) => Promise<GitBranchEntry[]>;
+    checkoutBranch: (workspacePath: string, branchName: string) => Promise<string>;
+    createBranch: (workspacePath: string, branchName: string) => Promise<string>;
     /** Diff of pending changes (staged first, else working tree) as LLM input. */
     diffSummary: (workspacePath: string) => Promise<{ staged: boolean; text: string }>;
     /** Discard local changes (restore from HEAD / remove untracked). */
@@ -570,7 +589,7 @@ export interface ElectronAPI {
     ) => Promise<GitFileVersions>;
     log: (workspacePath: string, relPath?: string, limit?: number) => Promise<GitLogEntry[]>;
   };
-  // ── Extensions (VSIX: themes + snippets) ────────────────────────────
+  // ── Extensions (VSIX / Open VSX) ────────────────────────────────────
   ext: {
     /** Opens a file picker and installs the chosen .vsix. Returns the
      *  installed extension payload, or null if the dialog was cancelled. */

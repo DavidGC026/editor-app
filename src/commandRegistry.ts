@@ -148,6 +148,11 @@ export function buildCommands(ctx: CommandBuildContext): Command[] {
       id: 'agent-cursor',
       action: wrap(() => ctx.runAgentInTerminal('cursor-agent')),
     }),
+    withCategory('Start Antigravity', 'Agent', {
+      id: 'agent-agy',
+      keywords: ['agy', 'google', 'antigravity'],
+      action: wrap(() => ctx.runAgentInTerminal('agy')),
+    }),
     withCategory('pnpm dev', 'Run', {
       id: 'run-pnpm-dev',
       action: wrap(() => ctx.runCommandInTerminal('pnpm dev')),

@@ -22,7 +22,7 @@ button:disabled {
 }
 
 ::selection {
-  background: rgba(182, 90, 72, 0.28);
+  background: rgba(229, 46, 61, 0.28);
 }
 
 /* ── Title Bar Drag ─────────────────────────────────────────────────── */
@@ -62,8 +62,8 @@ button:disabled {
 }
 
 .context-menu-item:hover {
-  background-color: rgba(182, 90, 72, 0.15);
-  color: #B65A48;
+  background-color: rgba(229, 46, 61, 0.15);
+  color: #E52E3D;
 }
 
 .context-menu-divider {
@@ -160,7 +160,7 @@ button:disabled {
 /* ── Generic input ──────────────────────────────────────────────────── */
 .forge-input {
   background-color: #1F2025;
-  border: 1px solid #B65A48;
+  border: 1px solid #E52E3D;
   color: #D0D3DA;
   outline: none;
   padding: 4px 8px;
@@ -171,7 +171,7 @@ button:disabled {
 /* ── Professional workbench surfaces ────────────────────────────────── */
 .forge-home {
   background:
-    radial-gradient(circle at 18% 0%, rgba(182, 90, 72, 0.13), transparent 34%),
+    radial-gradient(circle at 18% 0%, rgba(229, 46, 61, 0.13), transparent 34%),
     radial-gradient(circle at 88% 12%, rgba(157, 181, 255, 0.075), transparent 30%),
     linear-gradient(180deg, #303039 0%, #282B33 44%, #24262D 100%);
 }
@@ -265,15 +265,15 @@ button:disabled {
 .forge-primary-button {
   height: 34px;
   padding: 0 13px;
-  border: 1px solid rgba(182, 90, 72, 0.55);
-  background: rgba(182, 90, 72, 0.16);
+  border: 1px solid rgba(229, 46, 61, 0.55);
+  background: rgba(229, 46, 61, 0.16);
   color: #FFF2ED;
   font-size: 12px;
   font-weight: 650;
 }
 
 .forge-primary-button:hover {
-  background: rgba(182, 90, 72, 0.23);
+  background: rgba(229, 46, 61, 0.23);
 }
 
 .forge-secondary-button {
@@ -314,9 +314,9 @@ button:disabled {
 }
 
 .forge-wide-action:hover {
-  border-color: rgba(182, 90, 72, 0.38);
+  border-color: rgba(229, 46, 61, 0.38);
   color: #F2F4F8;
-  background: rgba(182, 90, 72, 0.085);
+  background: rgba(229, 46, 61, 0.085);
 }
 
 .forge-command-tile {
@@ -330,8 +330,8 @@ button:disabled {
 }
 
 .forge-command-tile:hover:not(:disabled) {
-  border-color: rgba(182, 90, 72, 0.34);
-  background: rgba(182, 90, 72, 0.082);
+  border-color: rgba(229, 46, 61, 0.34);
+  background: rgba(229, 46, 61, 0.082);
   color: #F2F4F8;
   transform: translateY(-1px);
 }

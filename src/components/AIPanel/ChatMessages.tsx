@@ -50,8 +50,8 @@ function LiveWriteView({
       className="flex items-center gap-2 px-2.5 py-1.5 rounded text-[12px] border border-forge-accent/40"
       style={{
         background: done
-          ? 'rgba(182, 90, 72, 0.06)'
-          : 'rgba(182, 90, 72, 0.10)',
+          ? 'rgba(229, 46, 61, 0.06)'
+          : 'rgba(229, 46, 61, 0.10)',
         color: done ? '#E7B9AF' : '#FFE1D8',
       }}
     >
@@ -94,7 +94,7 @@ function ToolCallView({ tool }: { tool: AIToolCall }) {
     statusText = `Error en ${tool.name}: ${tool.error}`;
   } else {
     icon = <Check size={13} className="text-forge-accent" />;
-    bg = 'rgba(182, 90, 72, 0.06)';
+    bg = 'rgba(229, 46, 61, 0.06)';
     if (tool.name === 'escribir_archivo') {
       const path = tool.paths?.[0] || tool.args.ruta;
       statusText = `Archivo afectado: ${relativize(workspacePath, path)}`;
@@ -141,7 +141,7 @@ function MessageBubble({ message }: { message: AIMessage }) {
         </div>
         <div
           className="max-w-[90%] px-3 py-2 rounded-md text-[13px] text-forge-text-strong border border-forge-border"
-          style={{ background: 'rgba(182, 90, 72, 0.08)' }}
+          style={{ background: 'rgba(229, 46, 61, 0.08)' }}
         >
           <p className="whitespace-pre-wrap break-words leading-relaxed">
             {message.content}
@@ -156,7 +156,7 @@ function MessageBubble({ message }: { message: AIMessage }) {
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-1.5 text-[11px] text-forge-text-dim">
         <Bot size={11} className="text-forge-accent" />
-        Forge
+        DVG Assistant
       </div>
       {(message.content || message.streaming) && (
         <div className="text-[13px] text-forge-text leading-relaxed whitespace-pre-wrap break-words">

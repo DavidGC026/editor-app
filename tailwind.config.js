@@ -24,7 +24,7 @@ export default {
         'forge-text-tab':   '#96969D',  // Inactive tab text
         'forge-text-term':  '#B1B4BC',  // Terminal text
         'forge-text-menu':  '#D3D5DE',  // Dropdown unselected
-        'forge-accent':     '#B65A48',  // Brick-red accent / highlight
+        'forge-accent':     '#E52E3D',  // Vibrant Red accent / highlight
       },
     },
   },

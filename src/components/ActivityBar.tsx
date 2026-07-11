@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import {
   Blocks,
+  Bot,
   Bug,
   Code2,
   Files,
@@ -10,6 +11,7 @@ import {
   MessageSquare,
   Minus,
   MousePointer2,
+  Orbit,
   PanelBottom,
   Search,
   Settings,
@@ -31,6 +33,7 @@ const items: ActivityItem[] = [
   { id: 'search', icon: <Search size={18} />, title: 'Search' },
   { id: 'git', icon: <GitBranch size={18} />, title: 'Source Control' },
   { id: 'debug', icon: <Bug size={18} />, title: 'Run and Debug' },
+  { id: 'agents', icon: <Bot size={18} />, title: 'Agents' },
   { id: 'extensions', icon: <Blocks size={18} />, title: 'Extensions' },
   { id: 'settings', icon: <Settings size={18} />, title: 'Settings' },
 ];
@@ -233,6 +236,15 @@ export default function ActivityBar() {
             detail="cursor-agent"
             onClick={() => {
               runAgentInTerminal('cursor-agent');
+              closeMenu();
+            }}
+          />
+          <MenuButton
+            icon={<Orbit size={14} />}
+            label="Run Antigravity"
+            detail="agy"
+            onClick={() => {
+              runAgentInTerminal('agy');
               closeMenu();
             }}
           />

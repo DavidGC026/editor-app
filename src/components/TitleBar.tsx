@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { Minus, Square, X } from 'lucide-react';
 import type { SidebarPanel } from '../types';
-import logoUrl from '../assets/forge-logo.png';
+import logoUrl from '../assets/dvg-logo.jpg';
 
 type MenuId = 'file' | 'edit' | 'view' | 'help';
 
@@ -98,10 +98,10 @@ export default function TitleBar() {
     <div className="h-[32px] bg-forge-titlebar flex items-center justify-between select-none drag-region border-b border-forge-border/40 relative">
       {/* Left: Logo + App name + Menu */}
       <div className="flex items-center h-full no-drag">
-        {/* Logo + Forge */}
+        {/* Logo + DVG */}
         <div className="flex items-center gap-2 px-3 h-full">
-          <img src={logoUrl} alt="Forge" className="h-[20px] w-auto object-contain" />
-          <span className="text-[13px] font-semibold text-forge-accent tracking-wide">Forge</span>
+          <img src={logoUrl} alt="DVG" className="h-[20px] w-auto object-contain" />
+          <span className="text-[13px] font-semibold text-forge-accent tracking-wide">DVG</span>
         </div>
 
         {/* Menu Items */}
@@ -188,7 +188,7 @@ export default function TitleBar() {
                   label="Keyboard Shortcuts"
                   onClick={() => {
                     window.alert([
-                      'Forge shortcuts',
+                      'DVG shortcuts',
                       '',
                       'Ctrl+Shift+P  Command Palette',
                       'Ctrl+P        Quick Open',
@@ -207,9 +207,9 @@ export default function TitleBar() {
                 <MenuItem label="Show Output" onClick={() => { setBottomTab('output'); closeMenu(); }} />
                 <MenuDivider />
                 <MenuItem
-                  label="About Forge"
+                  label="About DVG"
                   onClick={() => {
-                    window.alert('Forge\nModern Electron code editor');
+                    window.alert('DVG\nModern Electron code editor');
                     closeMenu();
                   }}
                 />
@@ -221,7 +221,7 @@ export default function TitleBar() {
 
       {/* Center: Workspace title */}
       <div className="absolute left-1/2 -translate-x-1/2 text-[12px] text-forge-text/70 pointer-events-none">
-        {workspaceName ? `${workspaceName} — Forge` : 'Forge'}
+        {workspaceName ? `${workspaceName} — DVG` : 'DVG'}
       </div>
 
       {/* Right: Window Controls */}
