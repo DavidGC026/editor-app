@@ -38,6 +38,50 @@ export interface ExtensionSnippetsPayload {
   snippets: Record<string, { prefix?: string | string[]; body?: string | string[]; description?: string }>;
 }
 
+export interface ExtensionIconThemePayload {
+  id: string;
+  label: string;
+  /** definitionId -> data URL (SVG inline or base64 PNG). */
+  definitions: Record<string, string>;
+  file: string | null;
+  folder: string | null;
+  folderExpanded: string | null;
+  rootFolder: string | null;
+  rootFolderExpanded: string | null;
+  fileExtensions: Record<string, string>;
+  fileNames: Record<string, string>;
+  folderNames: Record<string, string>;
+  folderNamesExpanded: Record<string, string>;
+  languageIds: Record<string, string>;
+}
+
+export interface ExtensionLanguageConfigPayload {
+  comments?: {
+    lineComment?: string;
+    blockComment?: [string, string];
+  };
+  brackets?: [string, string][];
+  autoClosingPairs?: ({ open: string; close: string; notIn?: string[] } | [string, string])[];
+  surroundingPairs?: ({ open: string; close: string } | [string, string])[];
+  folding?: {
+    markers?: { start?: string; end?: string };
+  };
+  wordPattern?: string;
+  indentationRules?: {
+    increaseIndentPattern?: string;
+    decreaseIndentPattern?: string;
+  };
+}
+
+export interface ExtensionLanguagePayload {
+  id: string;
+  aliases: string[];
+  extensions: string[];
+  filenames: string[];
+  firstLine: string | null;
+  configuration: ExtensionLanguageConfigPayload | null;
+}
+
 export interface InstalledExtensionPayload {
   id: string;
   displayName: string;
@@ -56,6 +100,8 @@ export interface InstalledExtensionPayload {
   };
   themes: ExtensionThemePayload[];
   snippets: ExtensionSnippetsPayload[];
+  iconThemes: ExtensionIconThemePayload[];
+  languages: ExtensionLanguagePayload[];
 }
 
 export interface MarketplaceExtensionPayload {
@@ -79,6 +125,19 @@ export interface MarketplaceSearchPayload {
   extensions: MarketplaceExtensionPayload[];
 }
 
+export interface MarketplaceExtensionDetailPayload extends MarketplaceExtensionPayload {
+  readme: string | null;
+  categories: string[];
+  tags: string[];
+  license: string | null;
+  homepage: string | null;
+  repository: string | null;
+  bugs: string | null;
+  engines: Record<string, string>;
+  preRelease: boolean;
+  publishedBy: string | null;
+}
+
 interface RegistryEntry {
   id: string;
   displayName: string;
@@ -95,6 +154,16 @@ interface RegistryEntry {
   dir: string;
   themes: { label: string; uiTheme: string; path: string }[];
   snippets: { language: string; path: string }[];
+  iconThemes: { id: string; label: string; path: string }[];
+  languages: {
+    id: string;
+    aliases: string[];
+    extensions: string[];
+    filenames: string[];
+    firstLine: string | null;
+    /** Relative path to language-configuration.json within the extension dir. */
+    configPath: string | null;
+  }[];
 }
 
 // ── Config helpers (same forge-config.json as the rest of main.ts) ─────
@@ -215,6 +284,79 @@ function toMonacoThemeId(extId: string, label: string): string {
   return slug || 'ext-theme';
 }
 
+/** Max icon file size (32 KB) — anything larger is skipped. */
+const ICON_MAX_BYTES = 32 * 1024;
+
+/** Read an icon file and return a data URL, or null if unreadable / too large. */
+function iconToDataUrl(iconAbsPath: string): string | null {
+  try {
+    const stat = fs.statSync(iconAbsPath);
+    if (stat.size > ICON_MAX_BYTES) return null;
+    const buf = fs.readFileSync(iconAbsPath);
+    const ext = path.extname(iconAbsPath).toLowerCase();
+    if (ext === '.svg') {
+      return `data:image/svg+xml;utf8,${encodeURIComponent(buf.toString('utf-8'))}`;
+    }
+    const mime = ext === '.png' ? 'image/png'
+      : ext === '.gif' ? 'image/gif'
+      : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+      : ext === '.webp' ? 'image/webp'
+      : 'application/octet-stream';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+function readIconThemePayload(entry: RegistryEntry, it: { id: string; label: string; path: string }): ExtensionIconThemePayload | null {
+  try {
+    const themeJsonPath = path.join(entry.dir, it.path);
+    const raw = parseJsonc(fs.readFileSync(themeJsonPath, 'utf-8'));
+    if (!raw || typeof raw !== 'object') return null;
+
+    const themeDir = path.dirname(themeJsonPath);
+    const definitions: Record<string, string> = {};
+    const rawDefs = raw.iconDefinitions;
+    if (rawDefs && typeof rawDefs === 'object') {
+      for (const [defId, def] of Object.entries(rawDefs)) {
+        const iconPath = (def as any)?.iconPath;
+        if (typeof iconPath !== 'string') continue;
+        const absIcon = path.resolve(themeDir, iconPath);
+        const dataUrl = iconToDataUrl(absIcon);
+        if (dataUrl) definitions[defId] = dataUrl;
+      }
+    }
+
+    const asStringRecord = (val: unknown): Record<string, string> => {
+      if (!val || typeof val !== 'object') return {};
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+        if (typeof v === 'string') out[k] = v;
+      }
+      return out;
+    };
+
+    return {
+      id: it.id,
+      label: it.label,
+      definitions,
+      file: typeof raw.file === 'string' ? raw.file : null,
+      folder: typeof raw.folder === 'string' ? raw.folder : null,
+      folderExpanded: typeof raw.folderExpanded === 'string' ? raw.folderExpanded : null,
+      rootFolder: typeof raw.rootFolder === 'string' ? raw.rootFolder : null,
+      rootFolderExpanded: typeof raw.rootFolderExpanded === 'string' ? raw.rootFolderExpanded : null,
+      fileExtensions: asStringRecord(raw.fileExtensions),
+      fileNames: asStringRecord(raw.fileNames),
+      folderNames: asStringRecord(raw.folderNames),
+      folderNamesExpanded: asStringRecord(raw.folderNamesExpanded),
+      languageIds: asStringRecord(raw.languageIds),
+    };
+  } catch (err) {
+    console.warn(`[forge:ext] skipping icon theme "${it.label}":`, (err as Error).message);
+    return null;
+  }
+}
+
 // ── Install / list / uninstall ──────────────────────────────────────────
 
 function entryToPayload(entry: RegistryEntry): InstalledExtensionPayload {
@@ -244,6 +386,67 @@ function entryToPayload(entry: RegistryEntry): InstalledExtensionPayload {
     }
   }
 
+  const entryIconThemes = entry.iconThemes || [];
+  const iconThemes: ExtensionIconThemePayload[] = [];
+  for (const it of entryIconThemes) {
+    const payload = readIconThemePayload(entry, it);
+    if (payload) iconThemes.push(payload);
+  }
+
+  const entryLanguages = entry.languages || [];
+  const languages: ExtensionLanguagePayload[] = [];
+  for (const lang of entryLanguages) {
+    let configuration: ExtensionLanguageConfigPayload | null = null;
+    if (lang.configPath) {
+      try {
+        const raw = parseJsonc(fs.readFileSync(path.join(entry.dir, lang.configPath), 'utf-8'));
+        if (raw && typeof raw === 'object') {
+          configuration = {};
+          if (raw.comments && typeof raw.comments === 'object') {
+            configuration.comments = {};
+            if (typeof raw.comments.lineComment === 'string') {
+              configuration.comments.lineComment = raw.comments.lineComment;
+            }
+            if (Array.isArray(raw.comments.blockComment) && raw.comments.blockComment.length === 2) {
+              configuration.comments.blockComment = [String(raw.comments.blockComment[0]), String(raw.comments.blockComment[1])];
+            }
+          }
+          if (Array.isArray(raw.brackets)) configuration.brackets = raw.brackets;
+          if (Array.isArray(raw.autoClosingPairs)) configuration.autoClosingPairs = raw.autoClosingPairs;
+          if (Array.isArray(raw.surroundingPairs)) configuration.surroundingPairs = raw.surroundingPairs;
+          if (raw.folding && typeof raw.folding === 'object') {
+            configuration.folding = {};
+            if (raw.folding.markers && typeof raw.folding.markers === 'object') {
+              configuration.folding.markers = {
+                ...(typeof raw.folding.markers.start === 'string' ? { start: raw.folding.markers.start } : {}),
+                ...(typeof raw.folding.markers.end === 'string' ? { end: raw.folding.markers.end } : {}),
+              };
+            }
+          }
+          if (typeof raw.wordPattern === 'string') configuration.wordPattern = raw.wordPattern;
+          if (raw.indentationRules && typeof raw.indentationRules === 'object') {
+            configuration.indentationRules = {
+              ...(typeof raw.indentationRules.increaseIndentPattern === 'string'
+                ? { increaseIndentPattern: raw.indentationRules.increaseIndentPattern } : {}),
+              ...(typeof raw.indentationRules.decreaseIndentPattern === 'string'
+                ? { decreaseIndentPattern: raw.indentationRules.decreaseIndentPattern } : {}),
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(`[forge:ext] skipping language config for "${lang.id}":`, (err as Error).message);
+      }
+    }
+    languages.push({
+      id: lang.id,
+      aliases: lang.aliases,
+      extensions: lang.extensions,
+      filenames: lang.filenames,
+      firstLine: lang.firstLine,
+      configuration,
+    });
+  }
+
   return {
     id: entry.id,
     displayName: entry.displayName,
@@ -260,23 +463,28 @@ function entryToPayload(entry: RegistryEntry): InstalledExtensionPayload {
       declarative: [
         ...(entry.themes.length > 0 ? ['themes'] : []),
         ...(entry.snippets.length > 0 ? ['snippets'] : []),
+        ...(entryLanguages.length > 0 ? ['languages'] : []),
       ],
       requiresExtensionHost: Boolean(entry.main || entry.browser || (entry.activationEvents || []).length > 0),
     },
     themes,
+    iconThemes,
     snippets,
+    languages,
   };
 }
 
 export function listExtensions(): {
   extensions: InstalledExtensionPayload[];
   activeTheme: string | null;
+  activeIconTheme: string | null;
 } {
   const registry = loadRegistry();
   const cfg = loadConfig();
   return {
     extensions: Object.values(registry).map(entryToPayload),
     activeTheme: typeof cfg.activeTheme === 'string' ? cfg.activeTheme : null,
+    activeIconTheme: typeof cfg.activeIconTheme === 'string' ? cfg.activeIconTheme : null,
   };
 }
 
@@ -284,6 +492,13 @@ export function setActiveTheme(themeId: string | null): void {
   const cfg = loadConfig();
   if (themeId) cfg.activeTheme = themeId;
   else delete cfg.activeTheme;
+  saveConfig(cfg);
+}
+
+export function setActiveIconTheme(iconThemeId: string | null): void {
+  const cfg = loadConfig();
+  if (iconThemeId) cfg.activeIconTheme = iconThemeId;
+  else delete cfg.activeIconTheme;
   saveConfig(cfg);
 }
 
@@ -347,7 +562,40 @@ export function installVsixFromPath(vsixPath: string): InstalledExtensionPayload
   if (Array.isArray(contributes.snippets)) {
     for (const s of contributes.snippets) {
       if (!s || typeof s.path !== 'string' || typeof s.language !== 'string') continue;
-      snippets.push({ language: s.language, path: s.path.replace(/^\.\//, '') });
+      snippets.push({ language: s.language, path: s.path.replace(/^\.\//,  '') });
+    }
+  }
+
+  const languages: RegistryEntry['languages'] = [];
+  if (Array.isArray(contributes.languages)) {
+    for (const lang of contributes.languages) {
+      if (!lang || typeof lang.id !== 'string') continue;
+      const aliases = Array.isArray(lang.aliases)
+        ? lang.aliases.filter((a: unknown): a is string => typeof a === 'string')
+        : [];
+      const exts = Array.isArray(lang.extensions)
+        ? lang.extensions.filter((e: unknown): e is string => typeof e === 'string')
+        : [];
+      const filenames = Array.isArray(lang.filenames)
+        ? lang.filenames.filter((f: unknown): f is string => typeof f === 'string')
+        : [];
+      const firstLine = typeof lang.firstLine === 'string' ? lang.firstLine : null;
+      const configPath = typeof lang.configuration === 'string'
+        ? lang.configuration.replace(/^\.\//,  '')
+        : null;
+      languages.push({ id: lang.id, aliases, extensions: exts, filenames, firstLine, configPath });
+    }
+  }
+
+  const iconThemes: RegistryEntry['iconThemes'] = [];
+  if (Array.isArray(contributes.iconThemes)) {
+    for (const t of contributes.iconThemes) {
+      if (!t || typeof t.path !== 'string') continue;
+      iconThemes.push({
+        id: typeof t.id === 'string' ? t.id : name,
+        label: typeof t.label === 'string' ? t.label : name,
+        path: t.path.replace(/^\.\//, ''),
+      });
     }
   }
 
@@ -381,6 +629,8 @@ export function installVsixFromPath(vsixPath: string): InstalledExtensionPayload
     dir: destDir,
     themes,
     snippets,
+    iconThemes,
+    languages,
   };
 
   const registry = loadRegistry();
@@ -495,6 +745,89 @@ export async function searchOpenVsx(
   return {
     total: asNumber(data?.totalSize, extensions.length),
     extensions,
+  };
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
+function asOptionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+// Full metadata + README for the extension-detail page shown in the editor
+// area. README download is capped so a pathological package can't balloon
+// the renderer payload.
+const README_MAX_BYTES = 512 * 1024;
+
+export async function getOpenVsxDetail(
+  extensionId: string,
+): Promise<MarketplaceExtensionDetailPayload> {
+  const match = extensionId.trim().match(/^([A-Za-z0-9][\w.-]*)\.([A-Za-z0-9][\w-]*)$/);
+  if (!match) {
+    throw new Error(`Identificador inválido: "${extensionId}". Usa el formato publisher.nombre.`);
+  }
+  const [, namespace, name] = match;
+
+  const res = await net.fetch(
+    `https://open-vsx.org/api/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/latest`,
+  );
+  if (res.status === 404) {
+    throw new Error(`No se encontró "${namespace}.${name}" en Open VSX (open-vsx.org).`);
+  }
+  if (!res.ok) {
+    throw new Error(`Open VSX respondió ${res.status} al obtener "${namespace}.${name}".`);
+  }
+  const meta: any = await res.json();
+
+  let readme: string | null = null;
+  const readmeUrl = asOptionalString(meta?.files?.readme);
+  if (readmeUrl) {
+    try {
+      const readmeRes = await net.fetch(readmeUrl);
+      if (readmeRes.ok) {
+        readme = (await readmeRes.text()).slice(0, README_MAX_BYTES);
+      }
+    } catch {
+      /* README is optional — the page still renders without it */
+    }
+  }
+
+  const engines: Record<string, string> = {};
+  if (meta?.engines && typeof meta.engines === 'object') {
+    for (const [key, value] of Object.entries(meta.engines)) {
+      if (typeof value === 'string') engines[key] = value;
+    }
+  }
+
+  return {
+    id: `${namespace}.${name}`.toLowerCase(),
+    namespace,
+    name,
+    displayName: asOptionalString(meta?.displayName) ?? name,
+    description: typeof meta?.description === 'string' ? meta.description : '',
+    version: typeof meta?.version === 'string' ? meta.version : '',
+    iconUrl: asOptionalString(meta?.files?.icon),
+    downloadCount: asNumber(meta?.downloadCount),
+    averageRating:
+      typeof meta?.averageRating === 'number' && Number.isFinite(meta.averageRating)
+        ? meta.averageRating
+        : null,
+    reviewCount: asNumber(meta?.reviewCount),
+    verified: Boolean(meta?.verified),
+    deprecated: Boolean(meta?.deprecated),
+    lastUpdated: asOptionalString(meta?.timestamp),
+    readme,
+    categories: asStringArray(meta?.categories),
+    tags: asStringArray(meta?.tags).filter((t) => !t.startsWith('__')),
+    license: asOptionalString(meta?.license),
+    homepage: asOptionalString(meta?.homepage),
+    repository: asOptionalString(meta?.repository),
+    bugs: asOptionalString(meta?.bugs),
+    engines,
+    preRelease: Boolean(meta?.preRelease),
+    publishedBy: asOptionalString(meta?.publishedBy?.loginName),
   };
 }
 

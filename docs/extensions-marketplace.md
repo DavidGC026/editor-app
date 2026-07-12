@@ -43,3 +43,16 @@ For each installed extension, Forge stores and exposes:
 
 The renderer uses this metadata to distinguish immediately supported contributions from packages that require a real extension host.
 
+## Extension Detail Page
+
+Clicking a marketplace result in the Extensions panel opens a detail tab in the editor area (like VS Code's extension page). The tab shows:
+
+- Icon, display name, version, verified/pre-release/deprecated badges.
+- Download count, rating, and last-updated date.
+- Install / Uninstall actions and a link to the Open VSX page.
+- The extension README, rendered with a minimal safe markdown subset (no raw HTML execution).
+- Sidebar metadata: categories, tags, publisher, license, `engines.vscode`, and repository/homepage/issues links.
+- For installed extensions, the runtime-support status (declarative contributions vs. extension host required).
+
+The full metadata + README is fetched through the `ext:detail` IPC handler (`getOpenVsxDetail` in `electron/extensions.ts`), which queries `open-vsx.org/api/<namespace>/<name>/latest`. README downloads are capped at 512 KB.
+

@@ -3,6 +3,7 @@ import Editor, { OnMount, BeforeMount } from '@monaco-editor/react';
 import { useStore } from '../store';
 import {
   AlertTriangle,
+  Blocks,
   Bot,
   Boxes,
   CheckCircle2,
@@ -28,6 +29,7 @@ import { lspClient, getLspLanguageId } from '../lsp/client';
 import { attachMonaco as attachExtensionMonaco, isThemeAvailable } from '../extensions/registry';
 import ImageViewer from './ImageViewer';
 import GitDiffEditor from './GitDiffEditor';
+import ExtensionDetailView from './ExtensionDetailView';
 import type { Tab, TreeNode } from '../types';
 import { runEditorAIAction, type EditorAIActionKind } from '../ai/quickActions';
 
@@ -325,7 +327,7 @@ function EditorToolbar() {
   const problems = useStore((s) => s.problems);
 
   const activeTab = openTabs.find((t) => t.id === activeTabId);
-  if (!activeTab || activeTab.gitDiff) return null;
+  if (!activeTab || activeTab.gitDiff || activeTab.extension) return null;
 
   const rel = relativePath(workspacePath, activeTab.path);
   const crumbs = rel.split('/').filter(Boolean);
@@ -426,7 +428,7 @@ function TabContextMenu({
 
   const { closeTab, closeOtherTabs, closeAllTabs, closeSavedTabs, togglePinTab, workspacePath } =
     useStore.getState();
-  const isRealFile = !tab.gitDiff;
+  const isRealFile = !tab.gitDiff && !tab.extension;
 
   return (
     <div
@@ -528,6 +530,9 @@ function TabBar() {
             )}
             {tab.gitDiff && (
               <GitBranch size={12} className="text-forge-accent flex-shrink-0" />
+            )}
+            {tab.extension && (
+              <Blocks size={12} className="text-forge-accent flex-shrink-0" />
             )}
 
             <span
@@ -1017,8 +1022,8 @@ function MonacoWrapper() {
     // didOpen for newly opened tabs.
     for (const tab of openTabs) {
       if (previouslyOpened.has(tab.path)) continue;
-      // Image tabs are never sent to the language server.
-      if (tab.imageDataUrl) continue;
+      // Image and extension-detail tabs are never sent to the language server.
+      if (tab.imageDataUrl || tab.extension) continue;
       if (!getLspLanguageId(tab.path)) continue;
       lspClient.openDocument(tab.path, tab.content);
       previouslyOpened.add(tab.path);
@@ -1037,6 +1042,12 @@ function MonacoWrapper() {
 
   if (activeTab.gitDiff) {
     return <GitDiffEditor tab={activeTab} />;
+  }
+
+  // Extension-detail tabs render a marketplace page (icon, stats, README)
+  // instead of a Monaco text editor.
+  if (activeTab.extension) {
+    return <ExtensionDetailView key={activeTab.id} extension={activeTab.extension} />;
   }
 
   // Image tabs are rendered as a non-editable preview instead of being

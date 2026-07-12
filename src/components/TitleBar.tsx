@@ -68,6 +68,7 @@ function MenuDivider() {
 export default function TitleBar() {
   const workspaceName = useStore((s) => s.workspaceName);
   const openFolder = useStore((s) => s.openFolder);
+  const openRemoteWorkspace = useStore((s) => s.openRemoteWorkspace);
   const saveFile = useStore((s) => s.saveFile);
   const closeWorkspace = useStore((s) => s.closeWorkspace);
   const setQuickOpenOpen = useStore((s) => s.setQuickOpenOpen);
@@ -115,7 +116,10 @@ export default function TitleBar() {
             </button>
             {openMenu === 'file' && (
               <MenuDropdown onClose={closeMenu}>
+                <MenuItem label="Nueva ventana" onClick={() => { window.electronAPI?.newWindow(); closeMenu(); }} />
+                <MenuDivider />
                 <MenuItem label="Open Folder..." onClick={() => { void openFolder(); closeMenu(); }} />
+                <MenuItem label="Open Remote SSH..." onClick={() => { void openRemoteWorkspace(); closeMenu(); }} />
                 <MenuItem label="Go to File..." shortcut="Ctrl+P" onClick={() => { setQuickOpenOpen(true); closeMenu(); }} />
                 <MenuItem label="Save" shortcut="Ctrl+S" onClick={() => { void saveFile(); closeMenu(); }} />
                 <MenuDivider />

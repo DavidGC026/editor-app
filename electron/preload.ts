@@ -33,6 +33,10 @@ export interface ClaudeIdeEditorState {
 export interface ElectronAPI {
   // Dialog
   openFolder: () => Promise<string | null>;
+  // Remote SSH workspace
+  remote: {
+    connect: (args: { target: string; path: string }) => Promise<string>;
+  };
   // File System
   readDirectory: (dirPath: string) => Promise<any[]>;
   readFile: (filePath: string) => Promise<string>;
@@ -49,6 +53,7 @@ export interface ElectronAPI {
   offFsChanged: (callback?: (event: FsChangeEvent) => void) => void;
   onWorkspaceRestore: (callback: (workspacePath: string) => void) => { dispose: () => void };
   // Window Controls
+  newWindow: () => void;
   minimize: () => void;
   maximize: () => void;
   close: () => void;
@@ -180,9 +185,11 @@ export interface ElectronAPI {
     installVsix: () => Promise<any | null>;
     installFromOpenVsx: (extensionId: string) => Promise<any>;
     searchOpenVsx: (query: string, size?: number) => Promise<any>;
+    detail: (extensionId: string) => Promise<any>;
     list: () => Promise<{ extensions: any[]; activeTheme: string | null }>;
     uninstall: (id: string) => Promise<boolean>;
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
+    setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
   };
   // Claude Code IDE bridge
   claudeIde: {
@@ -250,6 +257,10 @@ const allFsChangedHandlers = new Set<(_event: unknown, payload: FsChangeEvent) =
 contextBridge.exposeInMainWorld('electronAPI', {
   // Dialog
   openFolder: () => ipcRenderer.invoke('dialog:openFolder'),
+  remote: {
+    connect: (args: { target: string; path: string }) =>
+      ipcRenderer.invoke('remote:connect', args),
+  },
   // File System
   readDirectory: (dirPath: string) => ipcRenderer.invoke('fs:readDirectory', dirPath),
   readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
@@ -298,6 +309,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return { dispose: () => ipcRenderer.removeListener(channel, handler) };
   },
   // Window Controls
+  newWindow: () => ipcRenderer.send('window:new'),
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
@@ -497,10 +509,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ext:installFromOpenVsx', extensionId),
     searchOpenVsx: (query: string, size?: number) =>
       ipcRenderer.invoke('ext:searchOpenVsx', query, size),
+    detail: (extensionId: string) => ipcRenderer.invoke('ext:detail', extensionId),
     list: () => ipcRenderer.invoke('ext:list'),
     uninstall: (id: string) => ipcRenderer.invoke('ext:uninstall', id),
     setActiveTheme: (themeId: string | null) =>
       ipcRenderer.invoke('ext:setActiveTheme', themeId),
+    setActiveIconTheme: (iconThemeId: string | null) =>
+      ipcRenderer.invoke('ext:setActiveIconTheme', iconThemeId),
   },
   // ── Claude Code IDE bridge ────────────────────────────────────────
   claudeIde: {

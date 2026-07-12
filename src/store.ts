@@ -14,6 +14,7 @@ import {
   ProviderId,
   InstalledExtension,
   MarketplaceSearchResult,
+  MarketplaceExtension,
   GitChange,
   GitBranchEntry,
   GitLogEntry,
@@ -22,6 +23,9 @@ import {
   TerminalSession,
 } from './types';
 import { lspClient } from './lsp/client';
+import { LayoutSlice, createLayoutSlice } from './store/slices/layoutSlice';
+import { TerminalSlice, createTerminalSlice } from './store/slices/terminalSlice';
+import { GitSlice, createGitSlice } from './store/slices/gitSlice';
 import { applyExtensions, isThemeAvailable } from './extensions/registry';
 
 export type SelectedNodeKind = 'file' | 'directory';
@@ -52,7 +56,7 @@ export interface OpenFilePathOptions {
   line?: number;
 }
 
-interface EditorState {
+interface EditorState extends LayoutSlice, TerminalSlice, GitSlice {
   // Workspace
   workspacePath: string | null;
   workspaceName: string | null;
@@ -67,22 +71,6 @@ interface EditorState {
   openTabs: Tab[];
   activeTabId: string | null;
   pendingEditorReveal: EditorRevealRequest | null;
-
-  // Layout
-  sidebarVisible: boolean;
-  bottomPanelVisible: boolean;
-  activeSidebarPanel: SidebarPanel;
-  activeBottomTab: BottomTab;
-  /** Width of the sidebar column, in CSS pixels. */
-  sidebarWidth: number;
-  /** Height of the bottom panel (terminal), in CSS pixels. */
-  bottomPanelHeight: number;
-  rightPanelMaximized: boolean;
-
-  // Terminal
-  terminalSessions: TerminalSession[];
-  activeTerminalSessionId: string | null;
-  agentTerminalDock: 'bottom' | 'sidebar' | 'right';
 
   // Editor state
   cursorPosition: CursorPosition;
@@ -112,7 +100,6 @@ interface EditorState {
 
   // ── AI Panel ────────────────────────────────────────────────────────
   aiPanelVisible: boolean;
-  aiPanelWidth: number;
   /** Modal: API-key configuration. */
   aiApiKeyModalOpen: boolean;
   /** Providers that have an API key stored (read from main process). */
@@ -139,8 +126,10 @@ interface EditorState {
 
   // ── AI Panel actions ────────────────────────────────────────────────
   toggleAIPanel: () => void;
-  setAIPanelWidth: (width: number) => void;
   setAIApiKeyModalOpen: (open: boolean) => void;
+  setTheme: (theme: string) => void;
+  setIconTheme: (theme: string | null) => void;
+  openExtensionDetail: (ext: InstalledExtension | MarketplaceExtension) => void;
   refreshAIConfig: () => Promise<void>;
   setAIAvailableModels: (provider: ProviderId, models: string[]) => void;
   setAIActive: (provider: ProviderId, model: string) => Promise<void>;
@@ -194,37 +183,6 @@ interface EditorState {
   quickOpenOpen: boolean;
   setQuickOpenOpen: (open: boolean) => void;
 
-  // ── Git (Source Control) ────────────────────────────────────────────
-  gitIsRepo: boolean;
-  gitBranch: string | null;
-  gitBranches: GitBranchEntry[];
-  gitChanges: GitChange[];
-  /** Commits pendientes de push respecto al upstream. */
-  gitAhead: number;
-  /** Commits pendientes de pull respecto al upstream. */
-  gitBehind: number;
-  gitHasUpstream: boolean;
-  gitHasRemote: boolean;
-  /** True while a stage/unstage/commit operation is in flight. */
-  gitBusy: boolean;
-  /** True while a push/pull is in flight (network, can be slow). */
-  gitSyncBusy: boolean;
-  gitError: string | null;
-  refreshGitStatus: () => Promise<void>;
-  refreshGitBranches: () => Promise<void>;
-  gitCheckoutBranch: (branchName: string) => Promise<boolean>;
-  gitCreateBranch: (branchName: string) => Promise<boolean>;
-  gitStageFiles: (relPaths: string[]) => Promise<void>;
-  gitUnstageFiles: (relPaths: string[]) => Promise<void>;
-  /** Commits staged changes. Resolves true on success. */
-  gitCommitChanges: (message: string) => Promise<boolean>;
-  /** Discard local changes for the given files (restore HEAD / delete new). */
-  gitDiscardFiles: (relPaths: string[]) => Promise<void>;
-  /** Push (publica la rama si aún no tiene upstream). Resolves true on success. */
-  gitPushChanges: () => Promise<boolean>;
-  /** Pull --ff-only del upstream. Resolves true on success. */
-  gitPullChanges: () => Promise<boolean>;
-  /** Open a read-only Git diff tab for the given file. */
   openGitDiff: (relPath: string, staged?: boolean) => Promise<void>;
   /** Open a historical diff for one commit (parent vs commit). */
   openGitCommitDiff: (relPath: string, entry: GitLogEntry) => Promise<void>;
@@ -252,6 +210,7 @@ interface EditorState {
   installedExtensions: InstalledExtension[];
   /** Monaco theme id currently applied to the editor. */
   activeTheme: string;
+  activeIconTheme: string | null;
   /** Load the installed-extension list from the main process and wire
    *  supported contributions into Monaco. Called once on startup. */
   refreshExtensions: () => Promise<void>;
@@ -311,13 +270,9 @@ interface EditorState {
   clearPendingEditorReveal: (id: number) => void;
   saveFile: (tabId?: string) => Promise<void>;
   closeWorkspace: () => void;
-  toggleSidebar: () => void;
-  togglePanel: () => void;
-  setSidebarPanel: (panel: SidebarPanel) => void;
-  setBottomTab: (tab: BottomTab) => void;
-  setSidebarWidth: (width: number) => void;
-  setBottomPanelHeight: (height: number) => void;
-  setRightPanelMaximized: (maximized: boolean) => void;
+  openRemoteWorkspace: () => Promise<void>;
+
+  // ── Terminal Session ────────────────────────────────────────────────
   ensureTerminalSession: () => string;
   createTerminalSession: (label?: string) => string;
   closeTerminalSession: (sessionId: string) => void;
@@ -327,7 +282,6 @@ interface EditorState {
   runCommandInTerminal: (command: string) => void;
   /** Opens or focuses a dedicated terminal for an agent CLI. */
   runAgentInTerminal: (agentId: AgentTerminalId) => void;
-  setAgentTerminalDock: (dock: 'bottom' | 'sidebar' | 'right') => void;
   /** Send `cd "<path>"` (newline-appended) to the currently-active pty. */
   sendCdToActiveTerminal: (workspacePath: string) => void;
   setCursorPosition: (pos: CursorPosition) => void;
@@ -530,8 +484,6 @@ const MIN_EDITOR_FONT_SIZE = 8;
 const MAX_EDITOR_FONT_SIZE = 32;
 const EDITOR_FONT_SIZE_STEP = 1;
 const SETTINGS_STORAGE_KEY = 'forge.editorSettings.v1';
-const LAYOUT_STORAGE_KEY = 'forge.layout.v1';
-
 interface PersistedEditorSettings {
   autoSave: boolean;
   formatOnSave: boolean;
@@ -614,70 +566,14 @@ function persistEditorSettings(settings: PersistedEditorSettings): void {
 
 const initialEditorSettings = loadEditorSettings();
 
-interface PersistedLayoutSettings {
-  sidebarWidth: number;
-  bottomPanelHeight: number;
-  aiPanelWidth: number;
-  agentTerminalDock: 'bottom' | 'sidebar' | 'right';
-  rightPanelMaximized: boolean;
-}
-
-const DEFAULT_LAYOUT_SETTINGS: PersistedLayoutSettings = {
-  sidebarWidth: 250,
-  bottomPanelHeight: 260,
-  aiPanelWidth: 360,
-  agentTerminalDock: 'right',
-  rightPanelMaximized: false,
-};
-
-function loadLayoutSettings(): PersistedLayoutSettings {
-  try {
-    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
-    if (!raw) return DEFAULT_LAYOUT_SETTINGS;
-    const parsed = JSON.parse(raw);
-    const dock = parsed?.agentTerminalDock;
-    return {
-      sidebarWidth: Math.max(150, Math.min(500, Math.round(Number(parsed?.sidebarWidth ?? 250)))),
-      bottomPanelHeight: Math.max(100, Math.round(Number(parsed?.bottomPanelHeight ?? 260))),
-      aiPanelWidth: Math.max(280, Math.min(720, Math.round(Number(parsed?.aiPanelWidth ?? 360)))),
-      agentTerminalDock: dock === 'bottom' || dock === 'sidebar' || dock === 'right' ? dock : 'right',
-      rightPanelMaximized: Boolean(parsed?.rightPanelMaximized),
-    };
-  } catch {
-    return DEFAULT_LAYOUT_SETTINGS;
-  }
-}
-
-function persistLayoutSettings(patch: Partial<PersistedLayoutSettings>): void {
-  try {
-    const current = loadLayoutSettings();
-    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ ...current, ...patch }));
-  } catch {
-    /* best-effort */
-  }
-}
-
-const initialLayoutSettings = loadLayoutSettings();
 
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let autoSaveTabId: string | null = null;
 
-const AGENT_TERMINAL_CONFIG: Record<AgentTerminalId, { label: string; command: string }> = {
-  codex: { label: 'Codex', command: 'codex' },
-  claude: { label: 'Claude Code', command: 'claude' },
-  'cursor-agent': { label: 'Cursor Agent', command: 'cursor-agent' },
-  agy: { label: 'Antigravity', command: 'agy' },
-};
-
-function buildTerminalCommand(workspacePath: string | null, command: string): string {
-  const trimmed = command.trim();
-  const escapedWorkspace = workspacePath?.replace(/"/g, '\\"');
-  return escapedWorkspace
-    ? ` cd "${escapedWorkspace}" && ${trimmed}\r`
-    : ` ${trimmed}\r`;
-}
-
-export const useStore = create<EditorState>((set, get) => ({
+export const useStore = create<EditorState>((set, get, api) => ({
+  ...createLayoutSlice(set, get, api as any),
+  ...createTerminalSlice(set, get, api as any),
+  ...createGitSlice(set, get, api as any),
   // Initial state
   workspacePath: null,
   workspaceName: null,
@@ -688,16 +584,7 @@ export const useStore = create<EditorState>((set, get) => ({
   openTabs: [],
   activeTabId: null,
   pendingEditorReveal: null,
-  sidebarVisible: true,
-  bottomPanelVisible: false,
-  activeSidebarPanel: 'explorer',
-  activeBottomTab: 'terminal',
-  sidebarWidth: initialLayoutSettings.sidebarWidth,
-  bottomPanelHeight: initialLayoutSettings.bottomPanelHeight,
-  rightPanelMaximized: initialLayoutSettings.rightPanelMaximized,
-  terminalSessions: [],
-  activeTerminalSessionId: null,
-  agentTerminalDock: initialLayoutSettings.agentTerminalDock,
+
   cursorPosition: { line: 1, column: 1 },
   commandPaletteOpen: false,
   editorFontSize: initialEditorSettings.editorFontSize,
@@ -717,7 +604,6 @@ export const useStore = create<EditorState>((set, get) => ({
 
   // AI panel initial state
   aiPanelVisible: false,
-  aiPanelWidth: initialLayoutSettings.aiPanelWidth,
   aiApiKeyModalOpen: false,
   aiConfiguredProviders: [],
   aiActiveProvider: null,
@@ -756,6 +642,7 @@ export const useStore = create<EditorState>((set, get) => ({
   // Extensions initial state
   installedExtensions: [],
   activeTheme: 'forge-dark',
+  activeIconTheme: null,
   extBusy: false,
   extError: null,
   marketplaceResults: { total: 0, extensions: [] },
@@ -765,297 +652,6 @@ export const useStore = create<EditorState>((set, get) => ({
   // ── Quick Open actions ──────────────────────────────────────────────
   setQuickOpenOpen: (open: boolean) => {
     set({ quickOpenOpen: open });
-  },
-
-  // ── Git actions ─────────────────────────────────────────────────────
-  refreshGitStatus: async () => {
-    const { workspacePath } = get();
-    const empty = {
-      gitIsRepo: false,
-      gitBranch: null,
-      gitBranches: [] as GitBranchEntry[],
-      gitChanges: [] as GitChange[],
-      gitAhead: 0,
-      gitBehind: 0,
-      gitHasUpstream: false,
-      gitHasRemote: false,
-    };
-    if (!workspacePath || !window.electronAPI?.git) {
-      set(empty);
-      return;
-    }
-    try {
-      const status = await window.electronAPI.git.status(workspacePath);
-      set({
-        gitIsRepo: status.isRepo,
-        gitBranch: status.branch,
-        gitChanges: status.changes,
-        gitAhead: status.ahead ?? 0,
-        gitBehind: status.behind ?? 0,
-        gitHasUpstream: Boolean(status.hasUpstream),
-        gitHasRemote: Boolean(status.hasRemote),
-      });
-      void get().refreshGitBranches();
-    } catch (err) {
-      console.warn('[forge] git status failed:', (err as Error).message);
-      set(empty);
-    }
-  },
-
-  refreshGitBranches: async () => {
-    const { workspacePath, gitIsRepo } = get();
-    if (!workspacePath || !gitIsRepo || !window.electronAPI?.git) {
-      set({ gitBranches: [] });
-      return;
-    }
-    try {
-      const branches = await window.electronAPI.git.branches(workspacePath);
-      set({ gitBranches: branches });
-    } catch {
-      set({ gitBranches: [] });
-    }
-  },
-
-  gitCheckoutBranch: async (branchName: string) => {
-    const { workspacePath } = get();
-    if (!workspacePath || !branchName.trim()) return false;
-    set({ gitBusy: true, gitError: null });
-    try {
-      await window.electronAPI.git.checkoutBranch(workspacePath, branchName);
-      return true;
-    } catch (err) {
-      set({ gitError: cleanIpcError((err as Error).message) });
-      return false;
-    } finally {
-      set({ gitBusy: false });
-      await get().refreshGitStatus();
-    }
-  },
-
-  gitCreateBranch: async (branchName: string) => {
-    const { workspacePath } = get();
-    if (!workspacePath || !branchName.trim()) return false;
-    set({ gitBusy: true, gitError: null });
-    try {
-      await window.electronAPI.git.createBranch(workspacePath, branchName);
-      return true;
-    } catch (err) {
-      set({ gitError: cleanIpcError((err as Error).message) });
-      return false;
-    } finally {
-      set({ gitBusy: false });
-      await get().refreshGitStatus();
-    }
-  },
-
-  gitStageFiles: async (relPaths: string[]) => {
-    const { workspacePath } = get();
-    if (!workspacePath || relPaths.length === 0) return;
-    set({ gitBusy: true, gitError: null });
-    try {
-      await window.electronAPI.git.stage(workspacePath, relPaths);
-    } catch (err) {
-      set({ gitError: cleanIpcError((err as Error).message) });
-    } finally {
-      set({ gitBusy: false });
-      await get().refreshGitStatus();
-    }
-  },
-
-  gitUnstageFiles: async (relPaths: string[]) => {
-    const { workspacePath } = get();
-    if (!workspacePath || relPaths.length === 0) return;
-    set({ gitBusy: true, gitError: null });
-    try {
-      await window.electronAPI.git.unstage(workspacePath, relPaths);
-    } catch (err) {
-      set({ gitError: cleanIpcError((err as Error).message) });
-    } finally {
-      set({ gitBusy: false });
-      await get().refreshGitStatus();
-    }
-  },
-
-  gitCommitChanges: async (message: string) => {
-    const { workspacePath } = get();
-    if (!workspacePath) return false;
-    set({ gitBusy: true, gitError: null });
-    try {
-      await window.electronAPI.git.commit(workspacePath, message);
-      return true;
-    } catch (err) {
-      set({ gitError: cleanIpcError((err as Error).message) });
-      return false;
-    } finally {
-      set({ gitBusy: false });
-      await get().refreshGitStatus();
-    }
-  },
-
-  gitDiscardFiles: async (relPaths: string[]) => {
-    const { workspacePath } = get();
-    if (!workspacePath || relPaths.length === 0) return;
-    set({ gitBusy: true, gitError: null });
-    try {
-      await window.electronAPI.git.discard(workspacePath, relPaths);
-      // Reload any open tab whose file was restored/removed so the editor
-      // doesn't keep showing (and later save) the discarded content.
-      const affected = new Set(
-        relPaths.map((rel) => joinPath(workspacePath, rel)),
-      );
-      for (const tab of get().openTabs) {
-        if (!affected.has(tab.path) || tab.gitDiff || tab.imageDataUrl) continue;
-        try {
-          const content = await window.electronAPI.agent.readFileSafe(
-            workspacePath,
-            tab.path,
-          );
-          if (content === null) {
-            get().closeTab(tab.id);
-          } else {
-            set((state) => ({
-              openTabs: state.openTabs.map((t) =>
-                t.id === tab.id
-                  ? { ...t, content, savedContent: content, isUnsaved: false }
-                  : t,
-              ),
-            }));
-          }
-        } catch {
-          // File gone (untracked discarded): close its tab.
-          get().closeTab(tab.id);
-        }
-      }
-    } catch (err) {
-      set({ gitError: cleanIpcError((err as Error).message) });
-    } finally {
-      set({ gitBusy: false });
-      await get().refreshGitStatus();
-    }
-  },
-
-  gitPushChanges: async () => {
-    const { workspacePath } = get();
-    if (!workspacePath) return false;
-    set({ gitSyncBusy: true, gitError: null });
-    try {
-      await window.electronAPI.git.push(workspacePath);
-      return true;
-    } catch (err) {
-      set({ gitError: cleanIpcError((err as Error).message) });
-      return false;
-    } finally {
-      set({ gitSyncBusy: false });
-      await get().refreshGitStatus();
-    }
-  },
-
-  gitPullChanges: async () => {
-    const { workspacePath } = get();
-    if (!workspacePath) return false;
-    set({ gitSyncBusy: true, gitError: null });
-    try {
-      await window.electronAPI.git.pull(workspacePath);
-      return true;
-    } catch (err) {
-      set({ gitError: cleanIpcError((err as Error).message) });
-      return false;
-    } finally {
-      set({ gitSyncBusy: false });
-      await get().refreshGitStatus();
-    }
-  },
-
-  openGitDiff: async (relPath: string, staged = false) => {
-    const { workspacePath, gitDiffMode, openTabs } = get();
-    if (!workspacePath || !relPath.trim()) return;
-
-    const tabId = `git-diff:${staged ? 'staged' : 'working'}:${relPath}`;
-    const existing = openTabs.find((t) => t.id === tabId);
-    if (existing) {
-      set({ activeTabId: tabId, selectedPath: joinPath(workspacePath, relPath), selectedKind: 'file' });
-      return;
-    }
-
-    try {
-      const versions = await window.electronAPI.git.fileVersions(workspacePath, relPath, staged);
-      const fullPath = joinPath(workspacePath, relPath);
-      const name = relPath.split('/').pop() || relPath;
-      const language = getLanguageFromPath(relPath);
-      const newTab: Tab = {
-        id: tabId,
-        name: `${name} (Git)`,
-        path: fullPath,
-        content: versions.modified,
-        savedContent: versions.modified,
-        language,
-        isUnsaved: false,
-        gitDiff: {
-          relPath,
-          staged,
-          original: versions.original,
-          modified: versions.modified,
-          mode: gitDiffMode,
-        },
-      };
-      set((state) => ({
-        openTabs: [...state.openTabs, newTab],
-        activeTabId: tabId,
-        selectedPath: fullPath,
-        selectedKind: 'file',
-      }));
-    } catch (err) {
-      console.warn('[forge] openGitDiff failed:', (err as Error).message);
-    }
-  },
-
-  openGitCommitDiff: async (relPath: string, entry: GitLogEntry) => {
-    const { workspacePath, gitDiffMode, openTabs } = get();
-    if (!workspacePath || !relPath.trim() || !entry.hash) return;
-
-    const tabId = `git-history:${entry.hash}:${relPath}`;
-    const existing = openTabs.find((t) => t.id === tabId);
-    if (existing) {
-      set({ activeTabId: tabId });
-      return;
-    }
-
-    try {
-      const versions = await window.electronAPI.git.commitFileVersions(
-        workspacePath,
-        relPath,
-        entry.hash,
-      );
-      const fullPath = joinPath(workspacePath, relPath);
-      const name = relPath.split('/').pop() || relPath;
-      const language = getLanguageFromPath(relPath);
-      const newTab: Tab = {
-        id: tabId,
-        name: `${name} (${entry.shortHash})`,
-        path: fullPath,
-        content: versions.modified,
-        savedContent: versions.modified,
-        language,
-        isUnsaved: false,
-        gitDiff: {
-          relPath,
-          staged: false,
-          original: versions.original,
-          modified: versions.modified,
-          mode: gitDiffMode,
-          commitHash: entry.hash,
-          commitLabel: `${entry.shortHash} · ${entry.subject}`,
-        },
-      };
-      set((state) => ({
-        openTabs: [...state.openTabs, newTab],
-        activeTabId: tabId,
-        selectedPath: fullPath,
-        selectedKind: 'file',
-      }));
-    } catch (err) {
-      console.warn('[forge] openGitCommitDiff failed:', (err as Error).message);
-    }
   },
 
   setGitDiffMode: (mode: 'inline' | 'side-by-side') => {
@@ -1068,14 +664,6 @@ export const useStore = create<EditorState>((set, get) => ({
         ),
       };
     });
-  },
-
-  toggleActiveGitDiffMode: () => {
-    const { activeTabId, openTabs, gitDiffMode } = get();
-    const tab = openTabs.find((t) => t.id === activeTabId);
-    if (!tab?.gitDiff) return;
-    const next = gitDiffMode === 'inline' ? 'side-by-side' : 'inline';
-    get().setGitDiffMode(next);
   },
 
   registerRunEditorAction: (fn) => {
@@ -1126,16 +714,46 @@ export const useStore = create<EditorState>((set, get) => ({
       applyExtensions(extensions);
       set({
         installedExtensions: extensions,
-        // Never trust a persisted theme id blindly: the extension that
-        // provided it may have been uninstalled since.
         activeTheme:
           activeTheme && extensions.some((e) => e.themes.some((t) => t.id === activeTheme))
             ? activeTheme
             : 'forge-dark',
       });
     } catch (err) {
-      console.warn('[forge] refreshExtensions failed:', (err as Error).message);
+      console.error('Failed to refresh extensions:', err);
     }
+  },
+  setTheme: (theme: string) => {
+    set({ activeTheme: theme });
+    applyExtensions(get().installedExtensions);
+  },
+
+  setIconTheme: (theme: string | null) => {
+    set({ activeIconTheme: theme });
+  },
+
+  openExtensionDetail: (ext: InstalledExtension | MarketplaceExtension) => {
+    const tabId = `extension:${ext.id}`;
+    const { openTabs } = get();
+    const existing = openTabs.find((t) => t.id === tabId);
+    if (existing) {
+      set({ activeTabId: tabId });
+      return;
+    }
+    const newTab: Tab = {
+      id: tabId,
+      name: ext.displayName || ('name' in ext ? ext.name : ext.id),
+      path: `openvsx:${ext.id}`,
+      content: '',
+      savedContent: '',
+      language: 'plaintext',
+      isUnsaved: false,
+      extension: ext as MarketplaceExtension,
+    };
+    set((state) => ({
+      openTabs: [...state.openTabs, newTab],
+      activeTabId: tabId,
+    }));
   },
 
   installVsixExtension: async () => {
@@ -1232,11 +850,7 @@ export const useStore = create<EditorState>((set, get) => ({
   toggleAIPanel: () => {
     set((state) => ({ aiPanelVisible: !state.aiPanelVisible }));
   },
-  setAIPanelWidth: (width: number) => {
-    const clamped = Math.max(280, Math.min(720, Math.round(width)));
-    persistLayoutSettings({ aiPanelWidth: clamped });
-    set({ aiPanelWidth: clamped });
-  },
+
   setAIApiKeyModalOpen: (open: boolean) => set({ aiApiKeyModalOpen: open }),
   refreshAIConfig: async () => {
     try {
@@ -1659,6 +1273,22 @@ export const useStore = create<EditorState>((set, get) => ({
     }
   },
 
+  openRemoteWorkspace: async () => {
+    try {
+      const target = window.prompt('SSH host (example: user@server or server-alias)');
+      if (!target || !target.trim()) return;
+      const remotePath = window.prompt('Remote folder path', '~') || '~';
+      const uri = await window.electronAPI.remote.connect({
+        target: target.trim(),
+        path: remotePath.trim() || '~',
+      });
+      await get().openFolder(uri);
+    } catch (err) {
+      window.alert((err as Error)?.message || 'Failed to connect over SSH.');
+      console.error('Failed to open remote workspace:', err);
+    }
+  },
+
   refreshFileTree: async () => {
     const { workspacePath } = get();
     if (!workspacePath) return;
@@ -2072,245 +1702,6 @@ export const useStore = create<EditorState>((set, get) => ({
       aiPendingDiff: null,
       aiPendingDiffResolver: null,
     });
-  },
-
-  toggleSidebar: () => {
-    set((state) => ({ sidebarVisible: !state.sidebarVisible }));
-  },
-
-  togglePanel: () => {
-    set((state) => ({ bottomPanelVisible: !state.bottomPanelVisible }));
-  },
-
-  setSidebarPanel: (panel: SidebarPanel) => {
-    set((state) => {
-      if (state.activeSidebarPanel === panel && state.sidebarVisible) {
-        return { sidebarVisible: false };
-      }
-      return { activeSidebarPanel: panel, sidebarVisible: true };
-    });
-  },
-
-  setBottomTab: (tab: BottomTab) => {
-    set({ activeBottomTab: tab, bottomPanelVisible: true });
-  },
-
-  setSidebarWidth: (width: number) => {
-    // Clamp to sane bounds matching the divider behaviour in App.tsx.
-    const clamped = Math.max(150, Math.min(500, Math.round(width)));
-    persistLayoutSettings({ sidebarWidth: clamped });
-    set({ sidebarWidth: clamped });
-  },
-
-  setBottomPanelHeight: (height: number) => {
-    // App.tsx is responsible for clamping against the available viewport
-    // height (it knows the dynamic max). We just round to integer pixels.
-    const next = Math.max(100, Math.round(height));
-    persistLayoutSettings({ bottomPanelHeight: next });
-    set({ bottomPanelHeight: next });
-  },
-
-  setRightPanelMaximized: (maximized: boolean) => {
-    persistLayoutSettings({ rightPanelMaximized: maximized });
-    set({ rightPanelMaximized: maximized });
-  },
-
-  ensureTerminalSession: () => {
-    const { terminalSessions } = get();
-    if (terminalSessions.length > 0) {
-      const active = get().activeTerminalSessionId;
-      if (active && terminalSessions.some((s) => s.id === active)) return active;
-      return terminalSessions[0].id;
-    }
-    const id = `term-${Date.now()}`;
-    const session: TerminalSession = {
-      id,
-      label: 'Terminal 1',
-      ptyId: null,
-      agentId: null,
-      pendingCommand: null,
-    };
-    set({ terminalSessions: [session], activeTerminalSessionId: id });
-    return id;
-  },
-
-  createTerminalSession: (label?: string) => {
-    const count = get().terminalSessions.length;
-    const id = `term-${Date.now()}`;
-    const session: TerminalSession = {
-      id,
-      label: label ?? `Terminal ${count + 1}`,
-      ptyId: null,
-      agentId: null,
-      pendingCommand: null,
-    };
-    set((state) => ({
-      terminalSessions: [...state.terminalSessions, session],
-      activeTerminalSessionId: id,
-      bottomPanelVisible: true,
-      activeBottomTab: 'terminal',
-    }));
-    return id;
-  },
-
-  closeTerminalSession: (sessionId: string) => {
-    const state = get();
-    const session = state.terminalSessions.find((s) => s.id === sessionId);
-    if (!session) return;
-    if (session.ptyId && window.electronAPI?.terminalKill) {
-      try {
-        window.electronAPI.terminalKill(session.ptyId);
-      } catch {
-        /* best-effort */
-      }
-    }
-    const remaining = state.terminalSessions.filter((s) => s.id !== sessionId);
-    let nextActive = state.activeTerminalSessionId;
-    if (nextActive === sessionId) {
-      nextActive = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
-    }
-    set({ terminalSessions: remaining, activeTerminalSessionId: nextActive });
-  },
-
-  setActiveTerminalSession: (sessionId: string) => {
-    const session = get().terminalSessions.find((s) => s.id === sessionId);
-    const dock = get().agentTerminalDock;
-    set({
-      activeTerminalSessionId: sessionId,
-      ...(session?.agentId && dock === 'sidebar'
-        ? { activeSidebarPanel: 'agents' as SidebarPanel, sidebarVisible: true }
-        : session?.agentId && dock === 'right'
-          ? {}
-          : { bottomPanelVisible: true, activeBottomTab: 'terminal' as BottomTab }),
-    });
-  },
-
-  registerTerminalPty: (sessionId: string, ptyId: string | null) => {
-    set((state) => ({
-      terminalSessions: state.terminalSessions.map((s) =>
-        s.id === sessionId ? { ...s, ptyId } : s,
-      ),
-    }));
-    const session = get().terminalSessions.find((s) => s.id === sessionId);
-    if (ptyId && session?.pendingCommand && window.electronAPI?.terminalWrite) {
-      const pending = session.pendingCommand;
-      window.setTimeout(() => {
-        try {
-          window.electronAPI.terminalWrite(
-            ptyId,
-            pending.endsWith('\r') ? pending : `${pending}\r`,
-          );
-          set({
-            terminalSessions: get().terminalSessions.map((s) =>
-              s.id === sessionId ? { ...s, pendingCommand: null } : s,
-            ),
-          });
-        } catch (err) {
-          console.debug('[forge] terminalWrite (pending) failed:', (err as Error)?.message);
-        }
-      }, 120);
-    }
-  },
-
-  runCommandInTerminalSession: (sessionId: string, command: string) => {
-    const trimmed = command.trim();
-    if (!trimmed) return;
-    const state = get();
-    const fullCommand = buildTerminalCommand(state.workspacePath, trimmed);
-    const session = state.terminalSessions.find((s) => s.id === sessionId);
-
-    if (session?.ptyId && window.electronAPI?.terminalWrite) {
-      try {
-        window.electronAPI.terminalWrite(session.ptyId, fullCommand);
-        return;
-      } catch (err) {
-        console.debug('[forge] terminalWrite failed:', (err as Error)?.message);
-      }
-    }
-
-    set({
-      terminalSessions: state.terminalSessions.map((s) =>
-        s.id === sessionId ? { ...s, pendingCommand: fullCommand } : s,
-      ),
-    });
-  },
-
-  runCommandInTerminal: (command: string) => {
-    const trimmed = command.trim();
-    if (!trimmed) return;
-    set({ bottomPanelVisible: true, activeBottomTab: 'terminal' });
-    const state = get();
-    const activeNormal = state.terminalSessions.find((s) => (
-      s.id === state.activeTerminalSessionId && !s.agentId
-    ));
-    const firstNormal = state.terminalSessions.find((s) => !s.agentId);
-    const sessionId = activeNormal?.id ?? firstNormal?.id ?? get().createTerminalSession();
-    get().setActiveTerminalSession(sessionId);
-    get().runCommandInTerminalSession(sessionId, trimmed);
-  },
-
-  runAgentInTerminal: (agentId: AgentTerminalId) => {
-    const cfg = AGENT_TERMINAL_CONFIG[agentId];
-    const existing = get().terminalSessions.find((s) => s.agentId === agentId);
-    let sessionId: string;
-    let isNew = false;
-
-    if (existing) {
-      sessionId = existing.id;
-    } else {
-      sessionId = `term-agent-${agentId}-${Date.now()}`;
-      const session: TerminalSession = {
-        id: sessionId,
-        label: cfg.label,
-        ptyId: null,
-        agentId,
-        pendingCommand: null,
-      };
-      set((state) => ({
-        terminalSessions: [...state.terminalSessions, session],
-      }));
-      isNew = true;
-    }
-
-    const dock = get().agentTerminalDock;
-    set({
-      activeTerminalSessionId: sessionId,
-      ...(dock === 'sidebar'
-        ? { activeSidebarPanel: 'agents' as SidebarPanel, sidebarVisible: true }
-        : dock === 'right'
-          ? {}
-        : { bottomPanelVisible: true, activeBottomTab: 'terminal' as BottomTab }),
-    });
-
-    if (isNew) {
-      get().runCommandInTerminalSession(sessionId, cfg.command);
-    }
-  },
-
-  setAgentTerminalDock: (dock: 'bottom' | 'sidebar' | 'right') => {
-    persistLayoutSettings({ agentTerminalDock: dock });
-    set((state) => ({
-      agentTerminalDock: dock,
-      ...(dock === 'sidebar'
-        ? { activeSidebarPanel: 'agents' as SidebarPanel, sidebarVisible: true }
-        : dock === 'bottom' && state.terminalSessions.some((s) => s.agentId)
-          ? { bottomPanelVisible: true, activeBottomTab: 'terminal' as BottomTab }
-          : {}),
-    }));
-  },
-
-  sendCdToActiveTerminal: (workspacePath: string) => {
-    if (!workspacePath || !window.electronAPI?.terminalWrite) return;
-    const escaped = workspacePath.replace(/"/g, '\\"');
-    const command = ` cd "${escaped}"\r`;
-    for (const session of get().terminalSessions) {
-      if (!session.ptyId) continue;
-      try {
-        window.electronAPI.terminalWrite(session.ptyId, command);
-      } catch (err) {
-        console.debug('[forge] terminalWrite (cd) failed:', (err as Error)?.message);
-      }
-    }
   },
 
   setCursorPosition: (pos: CursorPosition) => {

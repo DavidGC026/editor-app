@@ -30,9 +30,11 @@ import {
   installVsix,
   installFromOpenVsx,
   searchOpenVsx,
+  getOpenVsxDetail,
   listExtensions,
   uninstallExtension,
   setActiveTheme,
+  setActiveIconTheme,
 } from './extensions';
 import {
   gitStatus,
@@ -257,6 +259,172 @@ interface TreeNode {
   children?: TreeNode[];
 }
 
+interface RemoteWorkspace {
+  target: string;
+  path: string;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function isRemoteWorkspacePath(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith('ssh://');
+}
+
+function parseRemoteWorkspaceUri(uri: string): RemoteWorkspace {
+  if (!isRemoteWorkspacePath(uri)) {
+    throw new Error('Ruta remota inválida.');
+  }
+  const rest = uri.slice('ssh://'.length);
+  const slash = rest.indexOf('/');
+  if (slash <= 0) throw new Error('La ruta remota debe incluir host y carpeta.');
+  const target = decodeURIComponent(rest.slice(0, slash));
+  const remotePath = decodeURI(rest.slice(slash)) || '/';
+  if (!target || /[\s\x00-\x1f]/.test(target)) {
+    throw new Error('Host SSH inválido.');
+  }
+  return { target, path: remotePath };
+}
+
+function buildRemoteWorkspaceUri(target: string, remotePath: string): string {
+  const cleanTarget = target.trim();
+  let cleanPath = remotePath.trim() || '~';
+  if (!cleanPath.startsWith('/')) cleanPath = `~/${cleanPath.replace(/^~\/?/, '')}`;
+  return `ssh://${encodeURIComponent(cleanTarget)}${encodeURI(cleanPath)}`;
+}
+
+function splitRemoteParent(filePath: string): string {
+  const idx = filePath.lastIndexOf('/');
+  if (idx <= 0) return '/';
+  return filePath.slice(0, idx);
+}
+
+function remoteChildPath(parent: string, child: string): string {
+  return parent.endsWith('/') ? `${parent}${child}` : `${parent}/${child}`;
+}
+
+function remotePathFromUri(uri: string): string {
+  return parseRemoteWorkspaceUri(uri).path;
+}
+
+function remoteUriWithPath(uri: string, remotePath: string): string {
+  const remote = parseRemoteWorkspaceUri(uri);
+  return buildRemoteWorkspaceUri(remote.target, remotePath);
+}
+
+function runSshCommand(
+  target: string,
+  command: string,
+  input?: string | Buffer,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ssh', [
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'ConnectTimeout=10',
+      target,
+      command,
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on('data', (b) => stdout.push(Buffer.from(b)));
+    child.stderr.on('data', (b) => stderr.push(Buffer.from(b)));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdout));
+      } else {
+        const message = Buffer.concat(stderr).toString('utf8').trim() || `ssh exited with ${code}`;
+        reject(new Error(message));
+      }
+    });
+
+    if (input !== undefined) child.stdin.end(input);
+    else child.stdin.end();
+  });
+}
+
+function runInteractiveSshCommand(target: string, command: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ssh', ['-o', 'ConnectTimeout=10', target, command], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on('data', (b) => stdout.push(Buffer.from(b)));
+    child.stderr.on('data', (b) => stderr.push(Buffer.from(b)));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(Buffer.concat(stdout));
+      else reject(new Error(Buffer.concat(stderr).toString('utf8').trim() || `ssh exited with ${code}`));
+    });
+  });
+}
+
+async function assertRemoteDirectory(target: string, remotePath: string): Promise<string> {
+  const out = await runInteractiveSshCommand(
+    target,
+    `cd ${shellQuote(remotePath)} && pwd -P`,
+  );
+  const resolved = out.toString('utf8').trim();
+  if (!resolved) throw new Error('No se pudo resolver la carpeta remota.');
+  return resolved;
+}
+
+async function readRemoteDirectoryRecursive(uri: string): Promise<TreeNode[]> {
+  const remote = parseRemoteWorkspaceUri(uri);
+  const command = [
+    `cd ${shellQuote(remote.path)} || exit 2`,
+    `find . -maxdepth 11 \\( -name node_modules -o -name dist -o -name dist-electron \\) -prune -o -mindepth 1 -exec sh -c 'for p do if [ -d "$p" ]; then printf "d\\t%s\\n" "$p"; else printf "f\\t%s\\n" "$p"; fi; done' sh {} +`,
+  ].join(' && ');
+  const output = await runSshCommand(remote.target, command);
+  const rows = output.toString('utf8').split('\n').filter(Boolean);
+  const root: TreeNode[] = [];
+  const dirs = new Map<string, TreeNode[]>();
+  dirs.set('.', root);
+
+  for (const row of rows) {
+    const tab = row.indexOf('\t');
+    if (tab <= 0) continue;
+    const kind = row.slice(0, tab);
+    const rel = row.slice(tab + 1).replace(/^\.\//, '');
+    if (!rel) continue;
+    const parts = rel.split('/');
+    const name = parts[parts.length - 1];
+    const parentRel = parts.length > 1 ? parts.slice(0, -1).join('/') : '.';
+    const remotePath = remoteChildPath(remote.path.replace(/\/+$/, ''), rel);
+    const childUri = remoteUriWithPath(uri, remotePath);
+    const node: TreeNode = {
+      id: childUri,
+      name,
+      path: childUri,
+      type: kind === 'd' ? 'directory' : 'file',
+    };
+    if (kind === 'd') {
+      node.children = [];
+      dirs.set(rel, node.children);
+    }
+    const parent = dirs.get(parentRel);
+    if (parent) parent.push(node);
+  }
+
+  const sortNodes = (nodes: TreeNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.type === 'directory' && b.type !== 'directory') return -1;
+      if (a.type !== 'directory' && b.type === 'directory') return 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const node of nodes) {
+      if (node.children) sortNodes(node.children);
+    }
+  };
+  sortNodes(root);
+  return root;
+}
+
 function readDirectoryRecursive(dirPath: string, depth: number = 0): TreeNode[] {
   if (depth > 10) return [];
 
@@ -299,11 +467,12 @@ function readDirectoryRecursive(dirPath: string, depth: number = 0): TreeNode[] 
   }
 }
 
-function createWindow() {
+function createWindow(options: { restoreLastWorkspace?: boolean } = {}) {
+  const restoreLastWorkspace = options.restoreLastWorkspace ?? true;
   const iconPath = resolveIconPath();
   const icon = iconPath ? nativeImage.createFromPath(iconPath) : undefined;
 
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 520,
@@ -320,28 +489,29 @@ function createWindow() {
       sandbox: false,
     },
   });
+  mainWindow = window;
 
-  installEdgeSnap(mainWindow);
+  installEdgeSnap(window);
 
   // Ensure Linux/Wayland docks pick up the icon as well.
   if (process.platform === 'linux' && icon && !icon.isEmpty()) {
     try {
-      mainWindow.setIcon(icon);
+      window.setIcon(icon);
     } catch {
       /* noop */
     }
   }
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
+    window.loadURL('http://localhost:5173');
+    window.webContents.openDevTools({ mode: 'detach' });
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    window.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
   // Let the renderer own zoom (editor font size). Block Electron's default
   // page zoom on Ctrl/Cmd + +/-/0 so shortcuts don't fight each other.
-  mainWindow.webContents.on('before-input-event', (event, input) => {
+  window.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
     if (!(input.control || input.meta) || input.alt) return;
     const zoomKey =
@@ -356,20 +526,26 @@ function createWindow() {
     }
   });
 
-  mainWindow.webContents.once('did-finish-load', () => {
+  window.webContents.once('did-finish-load', () => {
+    if (!restoreLastWorkspace) return;
     const lastPath = getLastWorkspaceFromStore();
-    if (lastPath && mainWindow && !mainWindow.isDestroyed()) {
+    if (lastPath && !window.isDestroyed()) {
       currentWorkspacePath = lastPath;
-      mainWindow.webContents.send('workspace:restore', lastPath);
+      window.webContents.send('workspace:restore', lastPath);
     }
   });
 
   // The LSP manager forwards notifications (publishDiagnostics, etc.) to
   // the current renderer window. Make sure it always knows which window to
   // target.
-  lspManager.setWindow(mainWindow);
+  lspManager.setWindow(window);
 
-  mainWindow.on('closed', () => {
+  window.on('focus', () => {
+    mainWindow = window;
+    lspManager.setWindow(window);
+  });
+
+  window.on('closed', () => {
     closeWorkspaceWatcher();
     // Best-effort: stop the LSP. We can't await here, but stop() handles
     // killed children gracefully.
@@ -378,7 +554,10 @@ function createWindow() {
     // process anyway, but doing it explicitly keeps shutdown clean.
     void stopLiveServer().catch(() => undefined);
     lspManager.setWindow(null);
-    mainWindow = null;
+    if (mainWindow === window) {
+      mainWindow = BrowserWindow.getAllWindows()[0] || null;
+      lspManager.setWindow(mainWindow);
+    }
   });
 }
 
@@ -450,8 +629,31 @@ ipcMain.handle('dialog:openFolder', async () => {
   return selectedPath;
 });
 
+ipcMain.handle(
+  'remote:connect',
+  async (_event, args: { target?: string; path?: string }) => {
+    const target = typeof args?.target === 'string' ? args.target.trim() : '';
+    const requestedPath = typeof args?.path === 'string' && args.path.trim()
+      ? args.path.trim()
+      : '~';
+    if (!target) throw new Error('Debes indicar un host SSH.');
+    if (/[\s\x00-\x1f]/.test(target)) {
+      throw new Error('El host SSH no puede contener espacios.');
+    }
+
+    const resolvedPath = await assertRemoteDirectory(target, requestedPath);
+    const uri = buildRemoteWorkspaceUri(target, resolvedPath);
+    currentWorkspacePath = uri;
+    setLastWorkspaceInStore(uri);
+    return uri;
+  },
+);
+
 ipcMain.handle('fs:readDirectory', async (_event, dirPath: string) => {
   try {
+    if (isRemoteWorkspacePath(dirPath)) {
+      return readRemoteDirectoryRecursive(dirPath);
+    }
     return readDirectoryRecursive(dirPath);
   } catch {
     return [];
@@ -460,6 +662,11 @@ ipcMain.handle('fs:readDirectory', async (_event, dirPath: string) => {
 
 ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
   try {
+    if (isRemoteWorkspacePath(filePath)) {
+      const remote = parseRemoteWorkspaceUri(filePath);
+      const out = await runSshCommand(remote.target, `cat ${shellQuote(remote.path)}`);
+      return out.toString('utf8');
+    }
     return fs.readFileSync(filePath, 'utf-8');
   } catch (err: any) {
     throw new Error(`Failed to read file: ${err.message}`);
@@ -481,9 +688,17 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 
 ipcMain.handle('fs:readImageDataUrl', async (_event, filePath: string) => {
   try {
-    const ext = path.extname(filePath).toLowerCase();
+    const actualPath = isRemoteWorkspacePath(filePath)
+      ? remotePathFromUri(filePath)
+      : filePath;
+    const ext = path.extname(actualPath).toLowerCase();
     const mime = IMAGE_MIME_TYPES[ext] || 'application/octet-stream';
-    const buf = fs.readFileSync(filePath);
+    const buf = isRemoteWorkspacePath(filePath)
+      ? await runSshCommand(
+          parseRemoteWorkspaceUri(filePath).target,
+          `cat ${shellQuote(parseRemoteWorkspaceUri(filePath).path)}`,
+        )
+      : fs.readFileSync(filePath);
     const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
     return { dataUrl, size: buf.length };
   } catch (err: any) {
@@ -493,6 +708,16 @@ ipcMain.handle('fs:readImageDataUrl', async (_event, filePath: string) => {
 
 ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string) => {
   try {
+    if (isRemoteWorkspacePath(filePath)) {
+      const remote = parseRemoteWorkspaceUri(filePath);
+      const parent = splitRemoteParent(remote.path);
+      await runSshCommand(
+        remote.target,
+        `mkdir -p ${shellQuote(parent)} && cat > ${shellQuote(remote.path)}`,
+        content,
+      );
+      return true;
+    }
     // Ensure parent directories exist (mkdir -p) so callers can write to
     // brand-new paths — e.g. the AI agent's real-time streaming writes
     // files like `src/components/NewFile.tsx` whose parent folders may
@@ -510,6 +735,14 @@ ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string)
 
 ipcMain.handle('fs:createFile', async (_event, filePath: string) => {
   try {
+    if (isRemoteWorkspacePath(filePath)) {
+      const remote = parseRemoteWorkspaceUri(filePath);
+      await runSshCommand(
+        remote.target,
+        `if [ -e ${shellQuote(remote.path)} ]; then echo "File already exists" >&2; exit 1; fi; mkdir -p ${shellQuote(splitRemoteParent(remote.path))} && : > ${shellQuote(remote.path)}`,
+      );
+      return true;
+    }
     if (fs.existsSync(filePath)) {
       throw new Error('File already exists');
     }
@@ -522,6 +755,14 @@ ipcMain.handle('fs:createFile', async (_event, filePath: string) => {
 
 ipcMain.handle('fs:createDirectory', async (_event, dirPath: string) => {
   try {
+    if (isRemoteWorkspacePath(dirPath)) {
+      const remote = parseRemoteWorkspaceUri(dirPath);
+      await runSshCommand(
+        remote.target,
+        `if [ -e ${shellQuote(remote.path)} ]; then echo "Directory already exists" >&2; exit 1; fi; mkdir -p ${shellQuote(remote.path)}`,
+      );
+      return true;
+    }
     if (fs.existsSync(dirPath)) {
       throw new Error('Directory already exists');
     }
@@ -534,6 +775,11 @@ ipcMain.handle('fs:createDirectory', async (_event, dirPath: string) => {
 
 ipcMain.handle('fs:deleteItem', async (_event, itemPath: string) => {
   try {
+    if (isRemoteWorkspacePath(itemPath)) {
+      const remote = parseRemoteWorkspaceUri(itemPath);
+      await runSshCommand(remote.target, `rm -rf -- ${shellQuote(remote.path)}`);
+      return true;
+    }
     const stat = fs.statSync(itemPath);
     if (stat.isDirectory()) {
       fs.rmSync(itemPath, { recursive: true, force: true });
@@ -548,6 +794,21 @@ ipcMain.handle('fs:deleteItem', async (_event, itemPath: string) => {
 
 ipcMain.handle('fs:renameItem', async (_event, oldPath: string, newPath: string) => {
   try {
+    if (isRemoteWorkspacePath(oldPath) || isRemoteWorkspacePath(newPath)) {
+      if (!isRemoteWorkspacePath(oldPath) || !isRemoteWorkspacePath(newPath)) {
+        throw new Error('Cannot rename between local and remote paths');
+      }
+      const oldRemote = parseRemoteWorkspaceUri(oldPath);
+      const newRemote = parseRemoteWorkspaceUri(newPath);
+      if (oldRemote.target !== newRemote.target) {
+        throw new Error('Cannot rename between different SSH hosts');
+      }
+      await runSshCommand(
+        oldRemote.target,
+        `mkdir -p ${shellQuote(splitRemoteParent(newRemote.path))} && mv -- ${shellQuote(oldRemote.path)} ${shellQuote(newRemote.path)}`,
+      );
+      return true;
+    }
     fs.renameSync(oldPath, newPath);
     return true;
   } catch (err: any) {
@@ -565,6 +826,10 @@ ipcMain.handle('fs:watch', async (_event, dirPath: string) => {
     currentWorkspacePath = dirPath;
     setLastWorkspaceInStore(dirPath);
   }
+  if (isRemoteWorkspacePath(dirPath)) {
+    closeWorkspaceWatcher();
+    return true;
+  }
   startWorkspaceWatcher(dirPath);
   return true;
 });
@@ -575,20 +840,27 @@ ipcMain.handle('fs:unwatch', async () => {
 });
 
 // ── Window Controls ──────────────────────────────────────────────────────
-ipcMain.on('window:minimize', () => {
-  mainWindow?.minimize();
+ipcMain.on('window:new', () => {
+  createWindow({ restoreLastWorkspace: false });
 });
 
-ipcMain.on('window:maximize', () => {
-  if (mainWindow?.isMaximized()) {
-    mainWindow.unmaximize();
+ipcMain.on('window:minimize', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  window?.minimize();
+});
+
+ipcMain.on('window:maximize', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  if (window?.isMaximized()) {
+    window.unmaximize();
   } else {
-    mainWindow?.maximize();
+    window?.maximize();
   }
 });
 
-ipcMain.on('window:close', () => {
-  mainWindow?.close();
+ipcMain.on('window:close', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  window?.close();
 });
 
 // ── Native Edit Commands ────────────────────────────────────────────────
@@ -688,6 +960,52 @@ function createPty(opts: { cwd?: string; cols?: number; rows?: number }): PtyLik
   };
 }
 
+function createSshPty(remote: RemoteWorkspace, opts: { cols?: number; rows?: number }): PtyLike {
+  const command = `cd ${shellQuote(remote.path)} && exec "\${SHELL:-/bin/sh}" -l`;
+  const cols = opts.cols || 80;
+  const rows = opts.rows || 24;
+
+  if (ptyModule) {
+    const p = ptyModule.spawn('ssh', ['-t', remote.target, command], {
+      name: 'xterm-color',
+      cols,
+      rows,
+      cwd: os.homedir(),
+      env: {
+        ...process.env,
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
+      } as { [k: string]: string },
+    });
+    return {
+      pid: p.pid,
+      onData: (cb) => p.onData(cb),
+      onExit: (cb) => p.onExit(cb),
+      write: (d) => p.write(d),
+      resize: (c, r) => { try { p.resize(c, r); } catch { /* noop */ } },
+      kill: () => { try { p.kill(); } catch { /* noop */ } },
+    };
+  }
+
+  const child: ChildProcessWithoutNullStreams = spawn('ssh', ['-tt', remote.target, command], {
+    cwd: os.homedir(),
+    env: { ...process.env, TERM: 'xterm-256color' },
+  });
+  const dataCbs: ((d: string) => void)[] = [];
+  const exitCbs: ((e: { exitCode: number }) => void)[] = [];
+  child.stdout.on('data', (b) => dataCbs.forEach((cb) => cb(b.toString('utf8'))));
+  child.stderr.on('data', (b) => dataCbs.forEach((cb) => cb(b.toString('utf8'))));
+  child.on('exit', (code) => exitCbs.forEach((cb) => cb({ exitCode: code ?? 0 })));
+  return {
+    pid: child.pid || 0,
+    onData: (cb) => { dataCbs.push(cb); },
+    onExit: (cb) => { exitCbs.push(cb); },
+    write: (d) => { try { child.stdin.write(d); } catch { /* noop */ } },
+    resize: () => { /* not supported */ },
+    kill: () => { try { child.kill(); } catch { /* noop */ } },
+  };
+}
+
 const terminals = new Map<string, PtyLike>();
 let nextTermId = 1;
 
@@ -704,10 +1022,12 @@ ipcMain.handle('terminal:create', (_event, opts: { cwd?: string; cols?: number; 
       ? currentWorkspacePath
       : os.homedir() || process.cwd());
 
-  const pty = createPty({
-    ...(opts || {}),
-    cwd: resolvedCwd,
-  });
+  const pty = isRemoteWorkspacePath(resolvedCwd)
+    ? createSshPty(parseRemoteWorkspaceUri(resolvedCwd), opts || {})
+    : createPty({
+        ...(opts || {}),
+        cwd: resolvedCwd,
+      });
   terminals.set(id, pty);
 
   pty.onData((data) => {
@@ -1172,6 +1492,10 @@ ipcMain.handle('lsp:start', async (_event, workspacePath: string) => {
   if (typeof workspacePath !== 'string' || !workspacePath) {
     throw new Error('lsp:start requires a workspacePath');
   }
+  if (isRemoteWorkspacePath(workspacePath)) {
+    await lspManager.stop();
+    return true;
+  }
   await lspManager.start(workspacePath);
   return true;
 });
@@ -1406,35 +1730,59 @@ ipcMain.handle('agent:readFileSafe', async (_event, workspacePath: string, ruta:
 // ── Git (Source Control panel) ───────────────────────────────────────────
 ipcMain.handle('git:status', async (_event, workspacePath: string) => {
   if (typeof workspacePath !== 'string' || !workspacePath) {
-    return { isRepo: false, branch: null, changes: [] };
+    return {
+      isRepo: false,
+      branch: null,
+      changes: [],
+      ahead: 0,
+      behind: 0,
+      hasUpstream: false,
+      hasRemote: false,
+    };
+  }
+  if (isRemoteWorkspacePath(workspacePath)) {
+    return {
+      isRepo: false,
+      branch: null,
+      changes: [],
+      ahead: 0,
+      behind: 0,
+      hasUpstream: false,
+      hasRemote: false,
+    };
   }
   return gitStatus(workspacePath);
 });
 
 ipcMain.handle('git:stage', async (_event, workspacePath: string, relPaths: string[]) => {
+  if (isRemoteWorkspacePath(workspacePath)) return true;
   if (!workspacePath || !Array.isArray(relPaths)) throw new Error('Argumentos inválidos.');
   await gitStage(workspacePath, relPaths.filter((p) => typeof p === 'string'));
   return true;
 });
 
 ipcMain.handle('git:unstage', async (_event, workspacePath: string, relPaths: string[]) => {
+  if (isRemoteWorkspacePath(workspacePath)) return true;
   if (!workspacePath || !Array.isArray(relPaths)) throw new Error('Argumentos inválidos.');
   await gitUnstage(workspacePath, relPaths.filter((p) => typeof p === 'string'));
   return true;
 });
 
 ipcMain.handle('git:commit', async (_event, workspacePath: string, message: string) => {
+  if (isRemoteWorkspacePath(workspacePath)) throw new Error('Git remoto está disponible desde la terminal SSH.');
   if (!workspacePath || typeof message !== 'string') throw new Error('Argumentos inválidos.');
   return gitCommit(workspacePath, message);
 });
 
 ipcMain.handle('git:discard', async (_event, workspacePath: string, relPaths: string[]) => {
+  if (isRemoteWorkspacePath(workspacePath)) return true;
   if (!workspacePath || !Array.isArray(relPaths)) throw new Error('Argumentos inválidos.');
   await gitDiscard(workspacePath, relPaths.filter((p) => typeof p === 'string'));
   return true;
 });
 
 ipcMain.handle('git:diffSummary', async (_event, workspacePath: string) => {
+  if (isRemoteWorkspacePath(workspacePath)) return { staged: false, text: '' };
   if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
   return gitDiffSummary(workspacePath);
 });
@@ -1445,31 +1793,37 @@ function currentGitAuth(): { githubToken: string } | undefined {
 }
 
 ipcMain.handle('git:push', async (_event, workspacePath: string) => {
+  if (isRemoteWorkspacePath(workspacePath)) throw new Error('Git remoto está disponible desde la terminal SSH.');
   if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
   return gitPush(workspacePath, currentGitAuth());
 });
 
 ipcMain.handle('git:pull', async (_event, workspacePath: string) => {
+  if (isRemoteWorkspacePath(workspacePath)) throw new Error('Git remoto está disponible desde la terminal SSH.');
   if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
   return gitPull(workspacePath, currentGitAuth());
 });
 
 ipcMain.handle('git:branches', async (_event, workspacePath: string) => {
+  if (isRemoteWorkspacePath(workspacePath)) return [];
   if (!workspacePath || typeof workspacePath !== 'string') throw new Error('Argumentos inválidos.');
   return gitListBranches(workspacePath);
 });
 
 ipcMain.handle('git:checkoutBranch', async (_event, workspacePath: string, branchName: string) => {
+  if (isRemoteWorkspacePath(workspacePath)) throw new Error('Git remoto está disponible desde la terminal SSH.');
   if (!workspacePath || typeof branchName !== 'string') throw new Error('Argumentos inválidos.');
   return gitCheckoutBranch(workspacePath, branchName);
 });
 
 ipcMain.handle('git:createBranch', async (_event, workspacePath: string, branchName: string) => {
+  if (isRemoteWorkspacePath(workspacePath)) throw new Error('Git remoto está disponible desde la terminal SSH.');
   if (!workspacePath || typeof branchName !== 'string') throw new Error('Argumentos inválidos.');
   return gitCreateBranch(workspacePath, branchName);
 });
 
 ipcMain.handle('git:diff', async (_event, workspacePath: string, relPath: string, staged = false) => {
+  if (isRemoteWorkspacePath(workspacePath)) return '';
   if (!workspacePath || typeof relPath !== 'string') throw new Error('Argumentos inválidos.');
   return gitDiff(workspacePath, relPath, Boolean(staged));
 });
@@ -1477,6 +1831,7 @@ ipcMain.handle('git:diff', async (_event, workspacePath: string, relPath: string
 ipcMain.handle(
   'git:fileVersions',
   async (_event, workspacePath: string, relPath: string, staged = false) => {
+    if (isRemoteWorkspacePath(workspacePath)) return { original: '', modified: '' };
     if (!workspacePath || typeof relPath !== 'string') throw new Error('Argumentos inválidos.');
     return gitGetFileVersions(workspacePath, relPath, Boolean(staged));
   },
@@ -1485,6 +1840,7 @@ ipcMain.handle(
 ipcMain.handle(
   'git:commitFileVersions',
   async (_event, workspacePath: string, relPath: string, commitHash: string) => {
+    if (isRemoteWorkspacePath(workspacePath)) return { original: '', modified: '' };
     if (!workspacePath || typeof relPath !== 'string' || typeof commitHash !== 'string') {
       throw new Error('Argumentos inválidos.');
     }
@@ -1493,6 +1849,7 @@ ipcMain.handle(
 );
 
 ipcMain.handle('git:log', async (_event, workspacePath: string, relPath?: string, limit?: number) => {
+  if (isRemoteWorkspacePath(workspacePath)) return [];
   if (!workspacePath) throw new Error('Argumentos inválidos.');
   return gitLog(
     workspacePath,
@@ -1518,6 +1875,13 @@ ipcMain.handle('ext:searchOpenVsx', async (_event, query: string, size?: number)
   return searchOpenVsx(query, typeof size === 'number' ? size : 20);
 });
 
+ipcMain.handle('ext:detail', async (_event, extensionId: string) => {
+  if (typeof extensionId !== 'string' || !extensionId.trim()) {
+    throw new Error('Identificador de extensión requerido.');
+  }
+  return getOpenVsxDetail(extensionId);
+});
+
 ipcMain.handle('ext:list', async () => {
   return listExtensions();
 });
@@ -1529,6 +1893,11 @@ ipcMain.handle('ext:uninstall', async (_event, id: string) => {
 
 ipcMain.handle('ext:setActiveTheme', async (_event, themeId: string | null) => {
   setActiveTheme(typeof themeId === 'string' && themeId ? themeId : null);
+  return true;
+});
+
+ipcMain.handle('ext:setActiveIconTheme', async (_event, iconThemeId: string | null) => {
+  setActiveIconTheme(typeof iconThemeId === 'string' && iconThemeId ? iconThemeId : null);
   return true;
 });
 

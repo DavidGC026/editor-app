@@ -36,6 +36,9 @@ export interface Tab {
     commitHash?: string;
     commitLabel?: string;
   };
+  /** When set, the tab renders a marketplace extension-detail page (icon,
+   *  stats, README, contributions) instead of a Monaco text editor. */
+  extension?: MarketplaceExtension;
 }
 
 // ── Image file detection ───────────────────────────────────────────────
@@ -354,6 +357,49 @@ export interface ExtensionSnippets {
   >;
 }
 
+export interface ExtensionLanguageConfiguration {
+  comments?: {
+    lineComment?: string;
+    blockComment?: [string, string];
+  };
+  brackets?: [string, string][];
+  autoClosingPairs?: ({ open: string; close: string; notIn?: string[] } | [string, string])[];
+  surroundingPairs?: ({ open: string; close: string } | [string, string])[];
+  folding?: {
+    markers?: { start?: string; end?: string };
+  };
+  wordPattern?: string;
+  indentationRules?: {
+    increaseIndentPattern?: string;
+    decreaseIndentPattern?: string;
+  };
+}
+
+export interface ExtensionLanguageContribution {
+  id: string;
+  aliases: string[];
+  extensions: string[];
+  filenames: string[];
+  firstLine: string | null;
+  configuration: ExtensionLanguageConfiguration | null;
+}
+
+export interface ExtensionIconTheme {
+  id: string;
+  label: string;
+  definitions: Record<string, string>;
+  file: string | null;
+  folder: string | null;
+  folderExpanded: string | null;
+  rootFolder: string | null;
+  rootFolderExpanded: string | null;
+  fileExtensions: Record<string, string>;
+  fileNames: Record<string, string>;
+  folderNames: Record<string, string>;
+  folderNamesExpanded: Record<string, string>;
+  languageIds: Record<string, string>;
+}
+
 export interface InstalledExtension {
   id: string;
   displayName: string;
@@ -372,6 +418,8 @@ export interface InstalledExtension {
   };
   themes: ExtensionTheme[];
   snippets: ExtensionSnippets[];
+  languages: ExtensionLanguageContribution[];
+  iconThemes: ExtensionIconTheme[];
 }
 
 export interface MarketplaceExtension {
@@ -393,6 +441,20 @@ export interface MarketplaceExtension {
 export interface MarketplaceSearchResult {
   total: number;
   extensions: MarketplaceExtension[];
+}
+
+/** Full Open VSX metadata + README shown in the extension-detail tab. */
+export interface MarketplaceExtensionDetail extends MarketplaceExtension {
+  readme: string | null;
+  categories: string[];
+  tags: string[];
+  license: string | null;
+  homepage: string | null;
+  repository: string | null;
+  bugs: string | null;
+  engines: Record<string, string>;
+  preRelease: boolean;
+  publishedBy: string | null;
 }
 
 // ── Claude Code IDE bridge ─────────────────────────────────────────────
@@ -428,6 +490,10 @@ export interface ClaudeIdeEditorState {
 export interface ElectronAPI {
   // Dialog
   openFolder: () => Promise<string | null>;
+  // Remote SSH workspace
+  remote: {
+    connect: (args: { target: string; path: string }) => Promise<string>;
+  };
   // File System
   readDirectory: (dirPath: string) => Promise<TreeNode[]>;
   readFile: (filePath: string) => Promise<string>;
@@ -446,6 +512,7 @@ export interface ElectronAPI {
   offFsChanged: (callback?: (event: FsChangeEvent) => void) => void;
   onWorkspaceRestore: (callback: (workspacePath: string) => void) => TerminalDisposable;
   // Window controls
+  newWindow: () => void;
   minimize: () => void;
   maximize: () => void;
   close: () => void;
@@ -597,9 +664,12 @@ export interface ElectronAPI {
     /** Downloads and installs `publisher.name` from open-vsx.org. */
     installFromOpenVsx: (extensionId: string) => Promise<InstalledExtension>;
     searchOpenVsx: (query: string, size?: number) => Promise<MarketplaceSearchResult>;
-    list: () => Promise<{ extensions: InstalledExtension[]; activeTheme: string | null }>;
+    /** Full metadata + README for the extension-detail tab. */
+    detail: (extensionId: string) => Promise<MarketplaceExtensionDetail>;
+    list: () => Promise<{ extensions: InstalledExtension[]; activeTheme: string | null; activeIconTheme: string | null }>;
     uninstall: (id: string) => Promise<boolean>;
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
+    setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
   };
   // ── Claude Code IDE bridge ─────────────────────────────────────────
   claudeIde: {
