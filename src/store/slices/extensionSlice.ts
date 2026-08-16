@@ -1,6 +1,7 @@
 import { StateCreator } from 'zustand';
 import type {
   ExtensionConfigurationValue,
+  ExtensionHostState,
   InstalledExtension,
   MarketplaceSearchResult,
   SidebarPanel,
@@ -40,6 +41,14 @@ export interface ExtensionSlice {
   workspaceTrust: WorkspaceTrustStatus;
   /** Last trust error (e.g. granting trust to a remote workspace). */
   workspaceTrustError: string | null;
+  /** Extension host state, mirrored from main. `null` outside Electron. */
+  extensionHostState: ExtensionHostState | null;
+
+  /** Subscribes to host state and keeps `extensionHostState` in step.
+   *  Returns the unsubscribe so the app can drop it on teardown. */
+  watchExtensionHost: () => () => void;
+  /** Asks main for a fresh host generation (safe when it is disabled). */
+  restartExtensionHost: () => Promise<void>;
 
   /** Load the installed-extension list from the main process and wire
    *  supported contributions into Monaco. Called once on startup. */
@@ -169,6 +178,29 @@ export const createExtensionSlice: StateCreator<
     canGrant: false,
   },
   workspaceTrustError: null,
+  extensionHostState: null,
+
+  watchExtensionHost: () => {
+    const api = window.electronAPI?.ext;
+    if (!api?.onHostEvent) return () => {};
+    void api.hostState().then((state) => set({ extensionHostState: state }));
+    // Only `state` events change what the workbench shows; logs and dropped
+    // notices belong to diagnostics, which lands with the host UI (3.6).
+    const subscription = api.onHostEvent((event) => {
+      if (event.type === 'state') set({ extensionHostState: event.state });
+    });
+    return () => subscription.dispose();
+  },
+
+  restartExtensionHost: async () => {
+    const api = window.electronAPI?.ext;
+    if (!api?.restartHost) return;
+    try {
+      set({ extensionHostState: await api.restartHost() });
+    } catch (err) {
+      console.error('Failed to restart the extension host:', err);
+    }
+  },
 
   refreshExtensions: async () => {
     try {

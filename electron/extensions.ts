@@ -40,10 +40,20 @@ import {
   type WorkspaceTrustStatusPayload,
 } from './extensions/domain/extension-dto';
 import type { InstalledExtensionRecord } from './extensions/domain/extension-manifest';
+import { FORGE_VSCODE_API_VERSION } from './extensions/domain/vscode-engine';
 import {
+  isActivatableUnderTrust,
   isRemoteWorkspaceUri,
   resolveExtensionTrust,
 } from './extensions/domain/workspace-trust';
+import {
+  UtilityProcessExtensionHost,
+  createUtilityProcessLauncher,
+} from './extensions/infrastructure/hosts/utility-process-host';
+import type {
+  ExtensionHostEvent,
+  ExtensionHostState,
+} from './extensions/application/ports/extension-host';
 import {
   WorkspaceTrustService,
   WorkspaceTrustError,
@@ -553,4 +563,90 @@ export function uninstallExtension(id: string): boolean {
   }
   extensionRegistry.remove(id);
   return true;
+}
+
+// ── Extension host wiring ───────────────────────────────────────────────
+//
+// The host runs in a `utilityProcess` and never talks to the renderer
+// directly (design §1.2): main owns the instance, and the workbench sees it
+// through the `ext:host:*` channels.
+//
+// Nothing is loaded here yet — the kernel handshakes and heartbeats, and
+// the loader lands in the next increment. What this wiring does own is the
+// answer to "which extensions may this generation see", which is a trust
+// decision and therefore belongs on this side of the boundary.
+
+/** Extensions that are enabled AND allowed to activate under current trust.
+ *  A blocked extension is not merely hidden in the UI: its id never reaches
+ *  the host, so no generation can load it by mistake. */
+function activatableExtensionIds(): string[] {
+  const trustState = getWorkspaceTrustStatus().state;
+  return extensionRegistry
+    .list()
+    .filter((entry) => entry.enabled && isActivatableUnderTrust(entry, trustState))
+    .map((entry) => entry.id);
+}
+
+const extensionHost = new UtilityProcessExtensionHost({
+  launcher: createUtilityProcessLauncher({
+    // Emitted by tsc next to this file's output, and copied by the packer.
+    entryPoint: path.join(__dirname, 'extension-host', 'bootstrap.js'),
+  }),
+  // Rebuilt per generation, so a restart always reflects the current
+  // workspace, trust decision and enabled set.
+  initialize: () => ({
+    apiVersion: FORGE_VSCODE_API_VERSION,
+    extensions: activatableExtensionIds(),
+    workspace: workspaceProvider(),
+    trust: getWorkspaceTrustStatus().state === 'trusted',
+  }),
+});
+
+export function getExtensionHostState(): ExtensionHostState {
+  return extensionHost.state;
+}
+
+export function onExtensionHostEvent(
+  listener: (event: ExtensionHostEvent) => void,
+): () => void {
+  return extensionHost.onEvent(listener);
+}
+
+/** Starts the host unless there is nothing it could ever run. Failure is
+ *  reported, never thrown: a host that will not come up must not stop Forge
+ *  from opening. */
+export async function startExtensionHost(): Promise<ExtensionHostState> {
+  if (activatableExtensionIds().length === 0) return extensionHost.state;
+  try {
+    return await extensionHost.start();
+  } catch (err) {
+    console.warn('[forge:ext-host] no arrancó:', (err as Error).message);
+    return extensionHost.state;
+  }
+}
+
+export function restartExtensionHost(reason = 'petición del usuario'): Promise<ExtensionHostState> {
+  return extensionHost.restart(reason);
+}
+
+export function stopExtensionHost(reason = 'cierre de Forge'): Promise<void> {
+  return extensionHost.stop(reason);
+}
+
+/**
+ * Reacts to a change in what the host is allowed to run (trust decision,
+ * workspace switch, enable/disable). Revoking trust must not leave a
+ * generation alive with code already loaded, so the host stops outright
+ * when nothing is activatable any more; otherwise it restarts, because the
+ * handshake payload is what carries the new set and it is only sent once
+ * per generation.
+ */
+export async function syncExtensionHost(reason: string): Promise<void> {
+  const status = extensionHost.state.status;
+  if (status === 'stopped' || status === 'disabled') return;
+  if (activatableExtensionIds().length === 0) {
+    await extensionHost.stop(reason);
+    return;
+  }
+  await extensionHost.restart(reason);
 }

@@ -144,6 +144,37 @@ empaquetan, hablando por un transporte de prueba.
   esperado escondería que el payload viene del otro lado del proceso; la
   validación por método llega con los schemas del 3.2.
 
+## Cableado del composition root
+
+Completado (2026-08-15). El 3.1 dejó el kernel probado pero desconectado;
+esto lo enchufa a Forge sin cargar todavía código de extensión.
+
+- **`electron/extensions.ts`**: la instancia del host vive en la facade, no
+  en `main.ts`, junto al resto del subsistema. `initialize` se reconstruye
+  por generación, así que un reinicio siempre refleja el workspace, la
+  decisión de confianza y el conjunto habilitado del momento.
+- **`activatableExtensionIds()`**: sólo llegan al host las extensiones
+  habilitadas **y** activables bajo la confianza actual
+  (`isActivatableUnderTrust`). Una extensión bloqueada no queda "oculta en
+  la UI": su id no viaja, de modo que ninguna generación puede cargarla por
+  error.
+- **`syncExtensionHost(reason)`**: el conjunto viaja en el handshake y el
+  handshake ocurre una vez por generación, así que un cambio de confianza o
+  de habilitación se aplica reiniciando. Si tras el cambio no queda nada
+  activable, el host se **detiene** en lugar de reiniciarse — revocar la
+  confianza no puede dejar viva una generación con código ya cargado.
+- **Arranque y parada**: `app.whenReady()` lo lanza sin bloquear (un host
+  que no levanta no debe retrasar ni impedir la ventana) y sólo si hay algo
+  que podría ejecutar; `window-all-closed` lo para explícitamente, que es
+  lo que dará su `deactivate()` a las extensiones cargadas.
+- **Canales `ext:host:state` / `ext:host:restart` / `ext:host:event`** con
+  su preload tipado, más `extensionHostState` y `watchExtensionHost()` en
+  el `extensionSlice`. El renderer **observa**; no manda. Los eventos de
+  logs y descartes ya llegan pero no se pintan: su superficie es el 3.6.
+- Se reutiliza `FORGE_VSCODE_API_VERSION` (la misma constante con la que se
+  validan los `engines.vscode`) como `apiVersion` del handshake, en vez de
+  declarar una segunda versión emulada que podría divergir.
+
 ## Próximo incremento
 
 3.2 — loader, `require('vscode')`, `ExtensionContext` y primitivas. El seam

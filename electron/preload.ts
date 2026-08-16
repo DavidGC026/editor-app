@@ -8,9 +8,18 @@ import type {
   MarketplaceSearchPayload,
   WorkspaceTrustStatusPayload,
 } from './extensions/domain/extension-dto';
+import type {
+  ExtensionHostEvent,
+  ExtensionHostState,
+} from './extensions/application/ports/extension-host';
 
 /** Trust of the open workspace, as pushed to and read by the renderer. */
 export type WorkspaceTrustStatus = WorkspaceTrustStatusPayload;
+
+/** Extension host state and traffic, as the renderer observes them. The
+ *  types come from the application port so both sides stay in step. */
+export type ExtensionHostStatePayload = ExtensionHostState;
+export type ExtensionHostEventPayload = ExtensionHostEvent;
 
 export interface FsChangeEvent {
   reason: 'add' | 'unlink' | 'addDir' | 'unlinkDir' | 'change' | string;
@@ -229,6 +238,14 @@ export interface ElectronAPI {
     /** Fires after every trust decision and on workspace switch. */
     onTrustChanged: (
       callback: (status: WorkspaceTrustStatus) => void,
+    ) => { dispose: () => void };
+    /** Extension host: observable state only — the renderer never speaks
+     *  to the host directly, main brokers every exchange. */
+    hostState: () => Promise<ExtensionHostStatePayload>;
+    restartHost: () => Promise<ExtensionHostStatePayload>;
+    /** State transitions, aggregated logs and dropped-message notices. */
+    onHostEvent: (
+      callback: (event: ExtensionHostEventPayload) => void,
     ) => { dispose: () => void };
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
@@ -573,6 +590,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('ext:config:changed', handler);
       return {
         dispose: () => ipcRenderer.removeListener('ext:config:changed', handler),
+      };
+    },
+    hostState: () => ipcRenderer.invoke('ext:host:state'),
+    restartHost: () => ipcRenderer.invoke('ext:host:restart'),
+    onHostEvent: (callback: (event: ExtensionHostEventPayload) => void) => {
+      const handler = (_event: unknown, payload: ExtensionHostEventPayload) => {
+        try {
+          callback(payload);
+        } catch (err) {
+          console.error('[forge] onHostEvent callback error:', err);
+        }
+      };
+      ipcRenderer.on('ext:host:event', handler);
+      return {
+        dispose: () => ipcRenderer.removeListener('ext:host:event', handler),
       };
     },
     trustStatus: () => ipcRenderer.invoke('ext:trust:status'),

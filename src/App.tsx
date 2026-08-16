@@ -474,6 +474,10 @@ export default function App() {
     void refreshExtensions();
   }, [refreshExtensions]);
 
+  // Mirror the extension host's state. Observation only — commands travel
+  // through main, which is the sole broker of the host (design §1.2).
+  useEffect(() => useStore.getState().watchExtensionHost(), []);
+
   // Extension settings can change from the main process (workspace switch,
   // another window's write): re-resolve the configuration on every push.
   useEffect(() => {

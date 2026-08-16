@@ -445,6 +445,42 @@ export interface WorkspaceTrustStatus {
   canGrant: boolean;
 }
 
+/** Lifecycle of the extension host process (Milestone 3.1). */
+export type ExtensionHostStatus =
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'restarting'
+  /** Crash-loop breaker tripped: nothing restarts without explicit intent. */
+  | 'disabled';
+
+/** Observable snapshot of the host, mirrored from the main-process port. */
+export interface ExtensionHostState {
+  status: ExtensionHostStatus;
+  /** Increments on every spawn; identifies the generation. */
+  generation: number;
+  restartsInWindow: number;
+  lastError: { code: string; message: string } | null;
+}
+
+/** Host traffic the renderer is allowed to observe. Requests never travel
+ *  this way: main is the only broker (design §1.2). */
+export type ExtensionHostEvent =
+  | { type: 'state'; state: ExtensionHostState }
+  | {
+      type: 'logs';
+      generation: number;
+      entries: { extensionId: string | null; level: string; message: string }[];
+    }
+  | { type: 'notification'; generation: number; envelope: unknown }
+  | {
+      type: 'request-timeout';
+      generation: number;
+      method: string;
+      extensionId: string | null;
+    }
+  | { type: 'dropped'; generation: number; reason: string; method: string };
+
 export interface InstalledExtension {
   id: string;
   displayName: string;
@@ -842,6 +878,12 @@ export interface ElectronAPI {
     /** Fires after every trust decision and on workspace switch. */
     onTrustChanged: (
       callback: (status: WorkspaceTrustStatus) => void,
+    ) => { dispose: () => void };
+    /** Extension host state; the renderer observes, never commands it. */
+    hostState: () => Promise<ExtensionHostState>;
+    restartHost: () => Promise<ExtensionHostState>;
+    onHostEvent: (
+      callback: (event: ExtensionHostEvent) => void,
     ) => { dispose: () => void };
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;

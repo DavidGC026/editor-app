@@ -46,6 +46,12 @@ import {
   getWorkspaceTrustStatus,
   setWorkspaceTrusted,
   onWorkspaceTrustChanged,
+  startExtensionHost,
+  stopExtensionHost,
+  restartExtensionHost,
+  syncExtensionHost,
+  getExtensionHostState,
+  onExtensionHostEvent,
 } from './extensions';
 import {
   gitStatus,
@@ -1962,7 +1968,15 @@ ipcMain.handle('ext:uninstall', async (_event, id: string) => {
 
 ipcMain.handle('ext:setEnabled', async (_event, id: string, enabled: boolean) => {
   if (typeof id !== 'string' || !id) return false;
-  return setExtensionEnabled(id, enabled !== false);
+  const changed = setExtensionEnabled(id, enabled !== false);
+  // Disabling must reach the host too: its loaded set is fixed per
+  // generation, so the change lands as a restart (or a stop, when nothing
+  // is left to run).
+  if (changed) {
+    void syncExtensionHost(`extensión "${id}" ${enabled !== false ? 'habilitada' : 'deshabilitada'}`)
+      .catch((err) => console.warn('[forge:ext-host] sync falló:', (err as Error).message));
+  }
+  return changed;
 });
 
 ipcMain.handle('ext:checkUpdates', async () => {
@@ -2007,7 +2021,29 @@ function broadcastWorkspaceTrust(status: ReturnType<typeof getWorkspaceTrustStat
   }
 }
 
-onWorkspaceTrustChanged(broadcastWorkspaceTrust);
+onWorkspaceTrustChanged((status) => {
+  broadcastWorkspaceTrust(status);
+  // The set of extensions a generation may load travels in the handshake,
+  // so a trust decision only takes effect on a new one — or on stopping the
+  // host outright when nothing is activatable any more.
+  void syncExtensionHost('cambio de confianza del workspace').catch((err) => {
+    console.warn('[forge:ext-host] sync tras trust falló:', (err as Error).message);
+  });
+});
+
+// ── Extension host ─────────────────────────────────────────────────────
+// The renderer never talks to the host directly (design §1.2): it observes
+// state through these channels and main stays the only broker.
+
+onExtensionHostEvent((event) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('ext:host:event', event);
+  }
+});
+
+ipcMain.handle('ext:host:state', async () => getExtensionHostState());
+
+ipcMain.handle('ext:host:restart', async () => restartExtensionHost());
 
 ipcMain.handle('ext:trust:status', async () => {
   return getWorkspaceTrustStatus();
@@ -2129,6 +2165,9 @@ app.whenReady().then(async () => {
   // No install is in flight yet: safe moment to drop abandoned staging and
   // orphan directories a post-commit failure could have left in the store.
   sweepExtensionStore();
+  // Non-blocking on purpose: a host that will not come up must not delay or
+  // prevent the window. It reports its state through `ext:host:event`.
+  void startExtensionHost();
   createWindow();
 });
 
@@ -2143,6 +2182,9 @@ app.on('window-all-closed', () => {
   // an EADDRINUSE leak could survive the next start. (window-all-closed
   // fires before quit on every platform; we await synchronously enough.)
   void stopLiveServer().catch(() => undefined);
+  // The utilityProcess dies with the app anyway; stopping it explicitly is
+  // what gives loaded extensions their deactivate() (design §5).
+  void stopExtensionHost().catch(() => undefined);
   claudeIdeServer.dispose();
   if (process.platform !== 'darwin') {
     app.quit();
