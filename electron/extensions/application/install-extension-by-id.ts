@@ -135,9 +135,32 @@ export class InstallExtensionById {
   private async downloadAndInstall(id: string): Promise<InstalledExtensionRecord> {
     const vsixPath = await this.options.catalog.downloadLatestVsix(id);
     try {
-      return this.options.installer.install(vsixPath);
+      const record = this.options.installer.install(vsixPath);
+      if (record.id !== id) {
+        // A download that installs under an identity other than the one
+        // asked for is publisher confusion, not a naming quirk: the user
+        // approved `id`, so anything else is rolled back immediately.
+        this.rollbackMismatched(record);
+        throw new ExtensionInstallError(
+          'identity-mismatch',
+          `Se pidió "${id}" pero el paquete descargado declara "${record.id}".`,
+        );
+      }
+      return record;
     } finally {
       this.options.deleteTempFile(vsixPath);
+    }
+  }
+
+  /** Best-effort undo of an install rejected after the registry write. */
+  private rollbackMismatched(record: InstalledExtensionRecord): void {
+    try {
+      this.options.registry.remove(record.id);
+    } catch (err) {
+      this.warn(
+        `no se pudo retirar del registro la extensión "${record.id}" con identidad `
+          + `inesperada: ${(err as Error).message}`,
+      );
     }
   }
 }

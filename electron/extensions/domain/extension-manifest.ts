@@ -92,6 +92,55 @@ export interface ExtensionGrammarManifest {
   injectTo: string[];
 }
 
+// ── Capabilities ────────────────────────────────────────────────────────
+// `capabilities.*` declares where an extension is willing to run. Forge
+// reads it as a security input, so the shape is normalized to three states
+// instead of the union of booleans and strings VS Code accepts.
+
+/** Declared support level of one capability (`capabilities.*.supported`). */
+export type ExtensionCapabilitySupport = 'supported' | 'limited' | 'unsupported';
+
+/** `capabilities.untrustedWorkspaces`: what the extension does in a
+ *  workspace the user has not trusted. */
+export interface ExtensionUntrustedWorkspacesCapability {
+  supported: ExtensionCapabilitySupport;
+  description: string | null;
+  /** Settings the extension itself ignores while the workspace is
+   *  untrusted; only meaningful with `limited` support. */
+  restrictedConfigurations: string[];
+}
+
+/** `capabilities.virtualWorkspaces`: whether it works without a filesystem. */
+export interface ExtensionVirtualWorkspacesCapability {
+  supported: ExtensionCapabilitySupport;
+  description: string | null;
+}
+
+export interface ExtensionCapabilitiesManifest {
+  untrustedWorkspaces: ExtensionUntrustedWorkspacesCapability;
+  virtualWorkspaces: ExtensionVirtualWorkspacesCapability;
+}
+
+/** Defaults when the manifest declares nothing: untrusted workspaces fail
+ *  closed (as in VS Code), virtual workspaces are assumed to work. */
+export function defaultExtensionCapabilities(): ExtensionCapabilitiesManifest {
+  return {
+    untrustedWorkspaces: {
+      supported: 'unsupported',
+      description: null,
+      restrictedConfigurations: [],
+    },
+    virtualWorkspaces: { supported: 'supported', description: null },
+  };
+}
+
+/**
+ * Identifier segments become path segments in the extension store, so they
+ * are constrained to a conservative charset: no separators, no leading dot,
+ * nothing that could climb out of the store root.
+ */
+export const EXTENSION_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 /**
  * Stable domain representation consumed by installation and persistence.
  * Infrastructure-specific locations such as the extracted directory do not
@@ -134,6 +183,8 @@ export interface NormalizedExtensionManifest {
   grammars: ExtensionGrammarManifest[];
   /** Menu items declared under `contributes.menus`, flattened. */
   menus: ExtensionMenuItemManifest[];
+  /** Where the extension declares it is willing to run (`capabilities`). */
+  capabilities: ExtensionCapabilitiesManifest;
 }
 
 /** Persisted installation record. Package-store metadata stays out of manifests. */
@@ -156,7 +207,12 @@ export type ManifestValidationIssue =
   | { code: 'invalid-json'; message: string }
   | { code: 'not-an-object' }
   | { code: 'missing-field'; field: 'name' | 'publisher' | 'version' | 'engines.vscode' }
-  | { code: 'invalid-field-type'; field: string; expected: string };
+  | { code: 'invalid-field-type'; field: string; expected: string }
+  /** Identifier segment that cannot be used as a path segment safely. */
+  | { code: 'invalid-field-format'; field: 'name' | 'publisher'; value: string }
+  /** `capabilities` declaring two things at once (e.g. full support in
+   *  untrusted workspaces *and* settings restricted there). */
+  | { code: 'contradictory-capabilities'; capability: 'untrustedWorkspaces'; detail: string };
 
 export type ManifestReadResult =
   /** Usable manifest; `issues` lists recoverable defects covered by legacy defaults. */
@@ -174,5 +230,9 @@ export function describeManifestIssue(issue: ManifestValidationIssue): string {
       return `falta el campo obligatorio "${issue.field}"`;
     case 'invalid-field-type':
       return `el campo "${issue.field}" debe ser ${issue.expected}`;
+    case 'invalid-field-format':
+      return `el campo "${issue.field}" tiene un valor no admitido: "${issue.value}"`;
+    case 'contradictory-capabilities':
+      return `"capabilities.${issue.capability}" se contradice: ${issue.detail}`;
   }
 }

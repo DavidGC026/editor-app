@@ -47,6 +47,11 @@ Forge tendrá Trusted y Restricted Mode. En Restricted Mode:
 
 Referencia: [Workspace Trust Extension Guide](https://code.visualstudio.com/api/extension-guides/workspace-trust).
 
+Estado: implementado en el Milestone 3.0 —estado por workspace persistido,
+Restricted Mode por defecto (carpetas nuevas y workspaces remotos incluidos)
+y política de activación basada en `capabilities.untrustedWorkspaces`. Ver
+[extensions-phase3-trust.md](./extensions-phase3-trust.md).
+
 ## 4. Controles de package/install
 
 - Límite de bytes descargados, descomprimidos, número de entries y ratio.
@@ -57,6 +62,11 @@ Referencia: [Workspace Trust Extension Guide](https://code.visualstudio.com/api/
   desconocidos.
 - Rollback si falla extracción, análisis, registry o activación inicial.
 - No ejecutar scripts npm de instalación.
+
+Estado: desde Milestone 3.0, la extracción rechaza entradas que escapan del
+paquete, entradas symlink y manifiestos cuya identidad (`name`/`publisher`)
+no puede usarse como segmento de ruta; el install por marketplace verifica
+además que el paquete descargado declare el id solicitado.
 
 Estado: desde Milestone 0.3, todos los readers declarativos resuelven recursos
 dentro del root instalado y rechazan escapes. Esto protege la lectura runtime;
@@ -137,11 +147,14 @@ Usarán versión y hash fijados o un cache controlado.
 
 No se ejecuta código de terceros hasta pasar:
 
-- Instalación transaccional.
-- Enable/disable fuera del host.
-- Safe Mode.
-- Workspace Trust básico.
-- RPC schema/timeout/heartbeat.
-- Crash isolation demostrado.
-- Logs y reporte de activation failure.
-- Fixtures maliciosos mínimos para package y runtime.
+| Requisito | Estado | Dónde |
+| --- | --- | --- |
+| Instalación transaccional | Cubierto | Milestone 1 ([progreso](./extensions-phase1-progress.md)) |
+| Enable/disable fuera del host | Cubierto | Milestone 1 |
+| Workspace Trust básico | Cubierto | Milestone 3.0 ([progreso](./extensions-phase3-trust.md)) |
+| Fixtures maliciosos mínimos de **package** | Cubierto | Milestone 3.0 (`tests/fixtures/extensions/malicious/`) |
+| Fixtures maliciosos mínimos de **runtime** | Pendiente | Requiere host (3.5) |
+| RPC schema/timeout/heartbeat | Pendiente | Milestone 3.1 |
+| Crash isolation demostrado | Pendiente | Milestone 3.5 |
+| Logs y reporte de activation failure | Pendiente | Milestone 3.4 |
+| Safe Mode | Pendiente | Milestone 3.5 |

@@ -483,6 +483,18 @@ export default function App() {
     return () => subscription?.dispose();
   }, []);
 
+  // Workspace Trust also changes from the main process (workspace switch,
+  // a decision taken in another window): follow the push, and re-list the
+  // extensions because their activation policy depends on it.
+  useEffect(() => {
+    void useStore.getState().refreshWorkspaceTrust();
+    const subscription = window.electronAPI?.ext?.onTrustChanged?.((status) => {
+      useStore.getState().applyWorkspaceTrust(status);
+      void useStore.getState().refreshExtensions();
+    });
+    return () => subscription?.dispose();
+  }, []);
+
   // Publish the workbench context keys that extension when-clauses read
   // (`workspaceOpen`, `editorLangId`, …). Mirrored from the store so a
   // clause like "editorLangId == python" tracks the active tab live.

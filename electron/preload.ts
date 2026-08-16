@@ -6,7 +6,11 @@ import type {
   InstalledExtensionPayload,
   MarketplaceExtensionDetailPayload,
   MarketplaceSearchPayload,
+  WorkspaceTrustStatusPayload,
 } from './extensions/domain/extension-dto';
+
+/** Trust of the open workspace, as pushed to and read by the renderer. */
+export type WorkspaceTrustStatus = WorkspaceTrustStatusPayload;
 
 export interface FsChangeEvent {
   reason: 'add' | 'unlink' | 'addDir' | 'unlinkDir' | 'change' | string;
@@ -214,6 +218,17 @@ export interface ElectronAPI {
     /** Fires after every configuration write ('*' = workspace switched). */
     onConfigurationChanged: (
       callback: (key: string) => void,
+    ) => { dispose: () => void };
+    /** Trust of the open workspace; Restricted Mode is the default. */
+    trustStatus: () => Promise<WorkspaceTrustStatus>;
+    /** Records that the user trusts the open workspace. Rejects when there
+     *  is none open or it is remote. */
+    grantWorkspaceTrust: () => Promise<WorkspaceTrustStatus>;
+    /** Returns the open workspace to Restricted Mode. */
+    revokeWorkspaceTrust: () => Promise<WorkspaceTrustStatus>;
+    /** Fires after every trust decision and on workspace switch. */
+    onTrustChanged: (
+      callback: (status: WorkspaceTrustStatus) => void,
     ) => { dispose: () => void };
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
@@ -558,6 +573,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('ext:config:changed', handler);
       return {
         dispose: () => ipcRenderer.removeListener('ext:config:changed', handler),
+      };
+    },
+    trustStatus: () => ipcRenderer.invoke('ext:trust:status'),
+    grantWorkspaceTrust: () => ipcRenderer.invoke('ext:trust:grant'),
+    revokeWorkspaceTrust: () => ipcRenderer.invoke('ext:trust:revoke'),
+    onTrustChanged: (callback: (status: WorkspaceTrustStatus) => void) => {
+      const handler = (_event: unknown, status: WorkspaceTrustStatus) => {
+        try {
+          callback(status);
+        } catch (err) {
+          console.error('[forge] onTrustChanged callback error:', err);
+        }
+      };
+      ipcRenderer.on('ext:trust:changed', handler);
+      return {
+        dispose: () => ipcRenderer.removeListener('ext:trust:changed', handler),
       };
     },
     setActiveTheme: (themeId: string | null) =>

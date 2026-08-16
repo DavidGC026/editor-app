@@ -1,5 +1,8 @@
 import type { ExtensionRegistry } from '../application/ports/extension-registry';
+import { defaultExtensionCapabilities } from '../domain/extension-manifest';
 import type {
+  ExtensionCapabilitiesManifest,
+  ExtensionCapabilitySupport,
   ExtensionCommandManifest,
   ExtensionGrammarManifest,
   ExtensionIconThemeManifest,
@@ -142,6 +145,41 @@ function menus(value: unknown): ExtensionMenuItemManifest[] {
   ));
 }
 
+const CAPABILITY_SUPPORT = ['supported', 'limited', 'unsupported'];
+
+function capabilitySupport(
+  value: unknown,
+  fallback: ExtensionCapabilitySupport,
+): ExtensionCapabilitySupport {
+  return CAPABILITY_SUPPORT.includes(value as string)
+    ? value as ExtensionCapabilitySupport
+    : fallback;
+}
+
+/** Records written before capabilities existed decode to the safe defaults:
+ *  no declaration means no activation in a restricted workspace. */
+function capabilities(value: unknown): ExtensionCapabilitiesManifest {
+  const defaults = defaultExtensionCapabilities();
+  const raw = asRecord(value) ?? {};
+  const untrusted = asRecord(raw.untrustedWorkspaces) ?? {};
+  const virtual = asRecord(raw.virtualWorkspaces) ?? {};
+  return {
+    untrustedWorkspaces: {
+      supported: capabilitySupport(untrusted.supported, defaults.untrustedWorkspaces.supported),
+      description: typeof untrusted.description === 'string' && untrusted.description
+        ? untrusted.description
+        : null,
+      restrictedConfigurations: [...new Set(strings(untrusted.restrictedConfigurations))],
+    },
+    virtualWorkspaces: {
+      supported: capabilitySupport(virtual.supported, defaults.virtualWorkspaces.supported),
+      description: typeof virtual.description === 'string' && virtual.description
+        ? virtual.description
+        : null,
+    },
+  };
+}
+
 function decodePreviousVersion(
   value: unknown,
 ): Pick<InstalledExtensionRecord, 'previousVersion'> {
@@ -200,6 +238,7 @@ export function decodeInstalledExtensionRecord(
     keybindings: keybindings(raw.keybindings),
     grammars: grammars(raw.grammars),
     menus: menus(raw.menus),
+    capabilities: capabilities(raw.capabilities),
     dir: raw.dir,
     ...(typeof raw.sha256 === 'string' && raw.sha256 ? { sha256: raw.sha256 } : {}),
     // Only an explicit `false` disables; legacy records predate the flag.

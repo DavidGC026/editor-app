@@ -43,6 +43,9 @@ import {
   setExtensionEnabled,
   setActiveTheme,
   setActiveIconTheme,
+  getWorkspaceTrustStatus,
+  setWorkspaceTrusted,
+  onWorkspaceTrustChanged,
 } from './extensions';
 import {
   gitStatus,
@@ -888,6 +891,9 @@ ipcMain.handle('fs:watch', async (_event, dirPath: string) => {
     // Workspace-scope settings follow the open workspace: let renderers
     // re-resolve their configuration against the new .forge/settings.json.
     broadcastExtensionConfigChange('*');
+    // Trust is per workspace too, and the new one starts restricted unless
+    // it was decided before: push the state without waiting for a poll.
+    broadcastWorkspaceTrust(getWorkspaceTrustStatus());
   }
   if (isRemoteWorkspacePath(dirPath)) {
     closeWorkspaceWatcher();
@@ -1963,13 +1969,11 @@ ipcMain.handle('ext:checkUpdates', async () => {
   return checkExtensionUpdates();
 });
 
-// Workspace-scope settings resolve against the open local workspace; the
-// facade receives a provider instead of reaching into main's state.
-configureExtensionWorkspace(() =>
-  currentWorkspacePath && !isRemoteWorkspacePath(currentWorkspacePath)
-    ? currentWorkspacePath
-    : null,
-);
+// Workspace-scope settings and Workspace Trust resolve against the open
+// workspace; the facade receives a provider instead of reaching into main's
+// state. Remote workspaces are forwarded as-is: trust must be able to tell
+// "remote" apart from "no workspace".
+configureExtensionWorkspace(() => currentWorkspacePath);
 
 function broadcastExtensionConfigChange(key: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -1993,6 +1997,29 @@ ipcMain.handle(
     return true;
   },
 );
+
+// ── Workspace Trust ────────────────────────────────────────────────────
+// Restricted Mode is the default; every window has to learn about a change
+// at once, so decisions broadcast like configuration writes do.
+function broadcastWorkspaceTrust(status: ReturnType<typeof getWorkspaceTrustStatus>): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('ext:trust:changed', status);
+  }
+}
+
+onWorkspaceTrustChanged(broadcastWorkspaceTrust);
+
+ipcMain.handle('ext:trust:status', async () => {
+  return getWorkspaceTrustStatus();
+});
+
+ipcMain.handle('ext:trust:grant', async () => {
+  return setWorkspaceTrusted(true);
+});
+
+ipcMain.handle('ext:trust:revoke', async () => {
+  return setWorkspaceTrusted(false);
+});
 
 ipcMain.handle('ext:rollback', async (_event, id: string) => {
   if (typeof id !== 'string' || !id) {

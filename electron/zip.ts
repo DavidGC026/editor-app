@@ -15,6 +15,9 @@ export interface ZipEntry {
   /** Entry path inside the archive, always with forward slashes. */
   name: string;
   isDirectory: boolean;
+  /** Unix symlink entry (`S_IFLNK` in the external attributes). Its data is
+   *  the link target, so extracting it verbatim would recreate the link. */
+  isSymlink: boolean;
   /** Decompresses and returns the entry contents. */
   getData: () => Buffer;
 }
@@ -46,6 +49,7 @@ export function readZipEntries(zipPath: string): ZipEntry[] {
     const nameLength = buf.readUInt16LE(offset + 28);
     const extraLength = buf.readUInt16LE(offset + 30);
     const commentLength = buf.readUInt16LE(offset + 32);
+    const externalAttributes = buf.readUInt32LE(offset + 38);
     const localHeaderOffset = buf.readUInt32LE(offset + 42);
     const name = buf
       .subarray(offset + 46, offset + 46 + nameLength)
@@ -55,6 +59,9 @@ export function readZipEntries(zipPath: string): ZipEntry[] {
     entries.push({
       name,
       isDirectory: name.endsWith('/'),
+      // The high 16 bits carry the unix mode when the archive was produced
+      // on a unix host; 0xA000 is S_IFLNK.
+      isSymlink: ((externalAttributes >>> 16) & 0xf000) === 0xa000,
       getData: () => {
         if (buf.readUInt32LE(localHeaderOffset) !== LFH_SIG) {
           throw new Error(`Cabecera local inválida para "${name}".`);

@@ -107,6 +107,30 @@ export interface ExtensionMenuItemPayload {
   group: string | null;
 }
 
+/** Mirror of `capabilities.*` as normalized in the main process. */
+export type ExtensionCapabilitySupportPayload = 'supported' | 'limited' | 'unsupported';
+
+export interface ExtensionCapabilitiesPayload {
+  untrustedWorkspaces: {
+    supported: ExtensionCapabilitySupportPayload;
+    description: string | null;
+    restrictedConfigurations: string[];
+  };
+  virtualWorkspaces: {
+    supported: ExtensionCapabilitySupportPayload;
+    description: string | null;
+  };
+}
+
+/** Trust of the open workspace, as the renderer sees it. */
+export interface WorkspaceTrustStatusPayload {
+  workspace: string | null;
+  state: 'trusted' | 'restricted';
+  decided: boolean;
+  remote: boolean;
+  canGrant: boolean;
+}
+
 // ── Compatibility report ────────────────────────────────────────────────
 // Derived from what actually loaded, never from package-name heuristics.
 
@@ -168,6 +192,14 @@ export interface InstalledExtensionPayload {
   grammars: ExtensionGrammarPayload[];
   /** Menu items this extension declares (`contributes.menus`). */
   menus: ExtensionMenuItemPayload[];
+  /** Declared `capabilities`, used by the Workspace Trust policy. */
+  capabilities: ExtensionCapabilitiesPayload;
+  /** What Restricted Mode allows for this extension right now. */
+  trust: {
+    activation: 'allowed' | 'limited' | 'blocked';
+    /** Settings the extension ignores while the workspace is untrusted. */
+    restrictedConfigurations: string[];
+  };
 }
 
 export interface MarketplaceExtensionPayload {
@@ -234,4 +266,6 @@ export interface ExtensionListPayload {
   extensions: InstalledExtensionPayload[];
   activeTheme: string | null;
   activeIconTheme: string | null;
+  /** Trust of the open workspace when the list was produced. */
+  workspaceTrust: WorkspaceTrustStatusPayload;
 }

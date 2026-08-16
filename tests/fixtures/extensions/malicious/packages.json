@@ -1,0 +1,81 @@
+{
+  "note": "Paquetes VSIX maliciosos mínimos para el gate de seguridad (Milestone 3.0). Se construyen en el test con el helper stored-zip; no se descarga nada de la red y todas las versiones están fijadas.",
+  "packages": [
+    {
+      "id": "zip-slip",
+      "description": "Entrada del ZIP que escapa del directorio del paquete con '..'.",
+      "expectedErrorCode": "unsafe-path",
+      "entries": [
+        {
+          "name": "extension/package.json",
+          "manifest": {
+            "name": "fixture-zip-slip",
+            "publisher": "forge-tests",
+            "version": "1.0.0",
+            "engines": { "vscode": "^1.80.0" }
+          }
+        },
+        { "name": "extension/../../pwned.txt", "data": "owned by zip slip" }
+      ]
+    },
+    {
+      "id": "symlink-escape",
+      "description": "Entrada symlink (S_IFLNK) que apunta fuera del paquete.",
+      "expectedErrorCode": "unsafe-path",
+      "entries": [
+        {
+          "name": "extension/package.json",
+          "manifest": {
+            "name": "fixture-symlink",
+            "publisher": "forge-tests",
+            "version": "1.0.0",
+            "engines": { "vscode": "^1.80.0" }
+          }
+        },
+        {
+          "name": "extension/themes/escape.json",
+          "data": "../../../../../../etc/passwd",
+          "symlink": true
+        }
+      ]
+    },
+    {
+      "id": "inconsistent-identity",
+      "description": "El publisher no es un segmento de ruta válido: el id derivado ('../../../tmp/evil.fixture-identity') se saldría del almacén de extensiones.",
+      "expectedErrorCode": "invalid-manifest",
+      "entries": [
+        {
+          "name": "extension/package.json",
+          "manifest": {
+            "name": "fixture-identity",
+            "publisher": "../../../tmp/evil",
+            "version": "1.0.0",
+            "engines": { "vscode": "^1.80.0" }
+          }
+        }
+      ]
+    },
+    {
+      "id": "contradictory-capabilities",
+      "description": "Declara soporte completo en workspaces no confiables y a la vez restringe settings ahí: la política de Restricted Mode no puede resolverse sin adivinar.",
+      "expectedErrorCode": "invalid-manifest",
+      "entries": [
+        {
+          "name": "extension/package.json",
+          "manifest": {
+            "name": "fixture-capabilities",
+            "publisher": "forge-tests",
+            "version": "1.0.0",
+            "engines": { "vscode": "^1.80.0" },
+            "capabilities": {
+              "untrustedWorkspaces": {
+                "supported": true,
+                "restrictedConfigurations": ["fixture.dangerousPath"]
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

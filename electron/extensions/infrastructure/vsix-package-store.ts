@@ -219,6 +219,15 @@ export class VsixPackageStore implements ExtensionPackageStore {
   }
 
   private versionDir(id: string, version: string): string {
+    // The id becomes a path segment too. The manifest reader already rejects
+    // publishers and names that cannot be used as one; this is the second
+    // lock, so no future manifest path can reach the filesystem unchecked.
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(id.toLowerCase())) {
+      throw new ExtensionInstallError(
+        'unsafe-path',
+        `El identificador "${id}" no puede usarse como directorio.`,
+      );
+    }
     // The version becomes a path segment; refuse separators outright.
     if (!/^[\w.-]+$/.test(version)) {
       throw new ExtensionInstallError(
@@ -232,6 +241,16 @@ export class VsixPackageStore implements ExtensionPackageStore {
   private extract(entries: ZipEntry[], stagingDir: string): void {
     let totalBytes = 0;
     for (const entry of entries) {
+      // A symlink entry is data that becomes a path once written: honouring
+      // it would let a package publish a link to anywhere on the machine,
+      // and every later reader resolves paths under the install root in
+      // good faith. Packages that need one are rejected, not sanitized.
+      if (entry.isSymlink) {
+        throw new ExtensionInstallError(
+          'unsafe-path',
+          `La entrada "${entry.name}" es un enlace simbólico y no se admite en un VSIX.`,
+        );
+      }
       const rel = entry.name.slice(CONTENT_PREFIX.length);
       const target = path.resolve(stagingDir, rel);
       if (target !== stagingDir && !target.startsWith(stagingDir + path.sep)) {

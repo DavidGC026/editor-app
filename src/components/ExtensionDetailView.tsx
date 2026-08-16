@@ -523,6 +523,26 @@ export default function ExtensionDetailView({ extension }: { extension: Marketpl
 
             {installed && <ExtensionSettingsSection extensionId={installed.id} />}
 
+            {installed && installed.trust?.activation !== 'allowed' && (
+              <SidebarSection title="Workspace Trust">
+                <div className="text-[12px] space-y-1.5">
+                  <span className="inline-block px-1.5 py-0.5 rounded border text-[9px] uppercase tracking-wide border-amber-400/25 bg-amber-400/10 text-amber-200/90">
+                    {installed.trust.activation === 'blocked' ? 'Restricted' : 'Limited'}
+                  </span>
+                  <div className="text-forge-text/60">
+                    {installed.trust.activation === 'blocked'
+                      ? 'No se activa: este workspace no es de confianza y la extensión no declara capabilities.untrustedWorkspaces.'
+                      : 'Se activa con funcionalidad reducida mientras el workspace no sea de confianza.'}
+                  </div>
+                  {installed.trust.restrictedConfigurations.length > 0 && (
+                    <div className="text-forge-text/45">
+                      Settings ignorados: {installed.trust.restrictedConfigurations.join(', ')}
+                    </div>
+                  )}
+                </div>
+              </SidebarSection>
+            )}
+
             {installed && (
               <SidebarSection title="Runtime Support">
                 <div className="text-[12px] space-y-1.5">

@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import type { AgentTerminalId, InstalledExtension, MarketplaceExtension } from '../types';
+import WorkspaceTrustBanner from './WorkspaceTrustBanner';
 
 function formatCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -88,6 +89,14 @@ function extensionRuntimeLabel(ext: InstalledExtension): { label: string; tone: 
     return {
       label: 'Terminal Agent',
       tone: 'border-blue-400/30 bg-blue-400/10 text-blue-300',
+    };
+  }
+  // Trust outranks the compatibility report: an extension the workspace
+  // cannot activate is not "Active", whatever it contributes.
+  if (ext.trust?.activation === 'blocked') {
+    return {
+      label: 'Restricted',
+      tone: 'border-amber-400/25 bg-amber-400/10 text-amber-200/90',
     };
   }
   const needsHost = report.blockers.some((b) => b.kind === 'requires-extension-host');
@@ -228,6 +237,8 @@ export default function ExtensionsPanel() {
           {extBusy ? <Loader2 size={13} className="animate-spin" /> : <FileArchive size={13} />}
           Install from VSIX...
         </button>
+
+        <WorkspaceTrustBanner />
 
         {(extError || marketplaceError) && (
           <p className="mt-2 text-[11px] leading-snug text-red-400/90">

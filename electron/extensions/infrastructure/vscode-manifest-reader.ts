@@ -1,5 +1,7 @@
 import type { ManifestReader } from '../application/ports/manifest-reader';
 import type {
+  ExtensionCapabilitiesManifest,
+  ExtensionCapabilitySupport,
   ExtensionCommandManifest,
   ExtensionGrammarManifest,
   ExtensionIconThemeManifest,
@@ -13,6 +15,10 @@ import type {
   ManifestReadResult,
   ManifestValidationIssue,
   NormalizedExtensionManifest,
+} from '../domain/extension-manifest';
+import {
+  defaultExtensionCapabilities,
+  EXTENSION_IDENTIFIER_PATTERN,
 } from '../domain/extension-manifest';
 import { JsoncRootTypeError, parseJsonc } from './jsonc';
 
@@ -237,6 +243,50 @@ function normalizeGrammars(contributes: UnknownRecord): ExtensionGrammarManifest
   });
 }
 
+// `capabilities.*.supported` is `true`, `false` or `"limited"`; the whole
+// capability may also be a bare boolean. Anything else is unknown to Forge
+// and falls back to the caller-provided default rather than to "supported",
+// so a typo can never widen what an extension is allowed to do.
+function capabilitySupport(
+  value: unknown,
+  fallback: ExtensionCapabilitySupport,
+): ExtensionCapabilitySupport {
+  if (value === true) return 'supported';
+  if (value === false) return 'unsupported';
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'limited') return 'limited';
+  return fallback;
+}
+
+function capabilityDescription(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function normalizeCapabilities(manifest: UnknownRecord): ExtensionCapabilitiesManifest {
+  const defaults = defaultExtensionCapabilities();
+  const capabilities = asRecord(manifest.capabilities);
+
+  const untrustedRaw = capabilities.untrustedWorkspaces;
+  const untrusted = asRecord(untrustedRaw);
+  const virtualRaw = capabilities.virtualWorkspaces;
+  const virtual = asRecord(virtualRaw);
+
+  return {
+    untrustedWorkspaces: {
+      supported: typeof untrustedRaw === 'boolean' || typeof untrustedRaw === 'string'
+        ? capabilitySupport(untrustedRaw, defaults.untrustedWorkspaces.supported)
+        : capabilitySupport(untrusted.supported, defaults.untrustedWorkspaces.supported),
+      description: capabilityDescription(untrusted.description),
+      restrictedConfigurations: [...new Set(stringArray(untrusted.restrictedConfigurations))],
+    },
+    virtualWorkspaces: {
+      supported: typeof virtualRaw === 'boolean' || typeof virtualRaw === 'string'
+        ? capabilitySupport(virtualRaw, defaults.virtualWorkspaces.supported)
+        : capabilitySupport(virtual.supported, defaults.virtualWorkspaces.supported),
+      description: capabilityDescription(virtual.description),
+    },
+  };
+}
+
 // Fields the validating mode inspects today. Recoverable defects keep the
 // legacy defaults; the transactional installer will reject them later.
 function collectManifestIssues(manifest: UnknownRecord): ManifestValidationIssue[] {
@@ -253,6 +303,29 @@ function collectManifestIssues(manifest: UnknownRecord): ManifestValidationIssue
   requireString('name');
   requireString('publisher');
   requireString('version');
+
+  // `<publisher>.<name>` is the directory the package is installed into, so
+  // a value carrying separators or dot segments is rejected here instead of
+  // being sanitized: a manifest whose identity does not match its own id is
+  // never a mistake worth recovering from.
+  for (const field of ['name', 'publisher'] as const) {
+    const value = manifest[field];
+    if (typeof value === 'string' && value !== '' && !EXTENSION_IDENTIFIER_PATTERN.test(value)) {
+      issues.push({ code: 'invalid-field-format', field, value });
+    }
+  }
+
+  const capabilities = normalizeCapabilities(manifest);
+  const untrusted = capabilities.untrustedWorkspaces;
+  if (untrusted.supported === 'supported' && untrusted.restrictedConfigurations.length > 0) {
+    issues.push({
+      code: 'contradictory-capabilities',
+      capability: 'untrustedWorkspaces',
+      detail:
+        'declara soporte completo en workspaces no confiables y a la vez '
+        + `restringe ${untrusted.restrictedConfigurations.length} setting(s)`,
+    });
+  }
 
   const engines = asRecord(manifest.engines);
   if (typeof engines.vscode !== 'string' || !engines.vscode) {
@@ -331,6 +404,7 @@ export class VscodeManifestReader implements ManifestReader {
       keybindings: normalizeKeybindings(contributes),
       grammars: normalizeGrammars(contributes),
       menus: normalizeMenus(contributes),
+      capabilities: normalizeCapabilities(manifest),
     };
   }
 }

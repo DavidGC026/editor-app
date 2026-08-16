@@ -37,8 +37,18 @@ import {
   type MarketplaceExtensionDetailPayload,
   type MarketplaceExtensionPayload,
   type MarketplaceSearchPayload,
+  type WorkspaceTrustStatusPayload,
 } from './extensions/domain/extension-dto';
 import type { InstalledExtensionRecord } from './extensions/domain/extension-manifest';
+import {
+  isRemoteWorkspaceUri,
+  resolveExtensionTrust,
+} from './extensions/domain/workspace-trust';
+import {
+  WorkspaceTrustService,
+  WorkspaceTrustError,
+} from './extensions/application/workspace-trust-service';
+import { ForgeWorkspaceTrustStore } from './extensions/infrastructure/forge-workspace-trust-store';
 import {
   CheckExtensionUpdates,
   type ExtensionUpdateInfo,
@@ -109,7 +119,10 @@ function getExtensionsRoot(): string {
 
 // ── Install / list / uninstall ──────────────────────────────────────────
 
-function entryToPayload(entry: InstalledExtensionRecord): InstalledExtensionPayload {
+function entryToPayload(
+  entry: InstalledExtensionRecord,
+  trustState: 'trusted' | 'restricted' = getWorkspaceTrustStatus().state,
+): InstalledExtensionPayload {
   const themes = themeReader.read(entry);
   const snippets = snippetReader.read(entry);
   const languages = languageReader.read(entry);
@@ -161,14 +174,21 @@ function entryToPayload(entry: InstalledExtensionRecord): InstalledExtensionPayl
     keybindings: entry.keybindings,
     grammars,
     menus: entry.menus,
+    capabilities: entry.capabilities,
+    trust: (() => {
+      const { activation, restrictedConfigurations } = resolveExtensionTrust(entry, trustState);
+      return { activation, restrictedConfigurations };
+    })(),
   };
 }
 
 export function listExtensions(): ExtensionListPayload {
   const cfg = loadConfig();
+  const workspaceTrust = getWorkspaceTrustStatus();
   return {
     protocolVersion: EXTENSION_IPC_PROTOCOL_VERSION,
-    extensions: extensionRegistry.list().map(entryToPayload),
+    extensions: extensionRegistry.list().map((entry) => entryToPayload(entry, workspaceTrust.state)),
+    workspaceTrust,
     activeTheme: typeof cfg.activeTheme === 'string' ? cfg.activeTheme : null,
     activeIconTheme: typeof cfg.activeIconTheme === 'string' ? cfg.activeIconTheme : null,
   };
@@ -229,12 +249,19 @@ const updateChecker = new CheckExtensionUpdates({
 });
 
 // Main owns which workspace is open; the facade only needs a provider that
-// yields the local workspace dir (or null for none/remote).
-let workspaceDirProvider: () => string | null = () => null;
+// yields it verbatim — a local path, a remote URI, or null. Trust cares
+// about remote workspaces (they can never be trusted), so the raw value is
+// what crosses the boundary and the local-only view is derived here.
+let workspaceProvider: () => string | null = () => null;
 
 /** Wires the active-workspace provider; called once from main. */
 export function configureExtensionWorkspace(provider: () => string | null): void {
-  workspaceDirProvider = provider;
+  workspaceProvider = provider;
+}
+
+function localWorkspaceDir(): string | null {
+  const workspace = workspaceProvider();
+  return workspace && !isRemoteWorkspaceUri(workspace) ? workspace : null;
 }
 
 // User-scope setting values live under their own forge-config.json key so
@@ -242,7 +269,7 @@ export function configureExtensionWorkspace(provider: () => string | null): void
 const configurationService = new ConfigurationService({
   records: () => extensionRegistry.list(),
   workspaceStore: () => {
-    const dir = workspaceDirProvider();
+    const dir = localWorkspaceDir();
     return dir ? new ForgeWorkspaceSettingsStore({ workspaceDir: dir }) : null;
   },
   userStore: {
@@ -259,6 +286,34 @@ const configurationService = new ConfigurationService({
     },
   },
 });
+
+// Trust decisions live under their own forge-config.json key: they are a
+// property of the workspace, not of any installed extension.
+const workspaceTrustService = new WorkspaceTrustService({
+  store: new ForgeWorkspaceTrustStore({ readConfig: loadConfig, writeConfig: saveConfig }),
+  workspace: () => workspaceProvider(),
+});
+
+/** Trust of the open workspace, for IPC and the extension payloads. */
+export function getWorkspaceTrustStatus(): WorkspaceTrustStatusPayload {
+  return workspaceTrustService.status();
+}
+
+/** Records the user's decision for the open workspace. Throws
+ *  `WorkspaceTrustError` when the workspace cannot hold one (none open, or
+ *  remote). */
+export function setWorkspaceTrusted(trusted: boolean): WorkspaceTrustStatusPayload {
+  return trusted ? workspaceTrustService.grant() : workspaceTrustService.revoke();
+}
+
+/** Notifies after every trust decision. Returns the unsubscribe. */
+export function onWorkspaceTrustChanged(
+  listener: (status: WorkspaceTrustStatusPayload) => void,
+): () => void {
+  return workspaceTrustService.onDidChange(listener);
+}
+
+export { WorkspaceTrustError };
 
 const rollback = new RollbackExtension({
   packageStore,

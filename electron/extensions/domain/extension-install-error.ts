@@ -9,6 +9,8 @@ export type ExtensionInstallErrorCode =
   | 'file-too-large'
   | 'package-too-large'
   | 'incompatible-engine'
+  /** The downloaded package declares an identity other than the requested one. */
+  | 'identity-mismatch'
   | 'commit-failed'
   | 'rollback-unavailable'
   | 'not-found'

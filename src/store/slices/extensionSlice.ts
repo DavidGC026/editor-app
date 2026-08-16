@@ -4,6 +4,7 @@ import type {
   InstalledExtension,
   MarketplaceSearchResult,
   SidebarPanel,
+  WorkspaceTrustStatus,
 } from '../../types';
 import { applyExtensions, isThemeAvailable } from '../../extensions/registry';
 import { findIconTheme } from '../../extensions/iconTheme';
@@ -34,6 +35,11 @@ export interface ExtensionSlice {
   extensionUpdates: Record<string, string>;
   /** Settings contributed by installed extensions, resolved per scope. */
   extensionConfiguration: ExtensionConfigurationValue[];
+  /** Trust of the open workspace. Restricted Mode is the default: nothing
+   *  is assumed trusted until the user says so. */
+  workspaceTrust: WorkspaceTrustStatus;
+  /** Last trust error (e.g. granting trust to a remote workspace). */
+  workspaceTrustError: string | null;
 
   /** Load the installed-extension list from the main process and wire
    *  supported contributions into Monaco. Called once on startup. */
@@ -60,6 +66,13 @@ export interface ExtensionSlice {
   updateExtension: (id: string) => Promise<string | null>;
   /** Reloads `extensionConfiguration` from the main process. */
   refreshExtensionConfiguration: () => Promise<void>;
+  /** Reloads the workspace trust status from the main process. */
+  refreshWorkspaceTrust: () => Promise<void>;
+  /** Applies a trust status pushed by main (`ext:trust:changed`). */
+  applyWorkspaceTrust: (status: WorkspaceTrustStatus) => void;
+  /** Trusts (or, with `false`, restricts again) the open workspace.
+   *  Resolves with an error message to show, or null on success. */
+  setWorkspaceTrusted: (trusted: boolean) => Promise<string | null>;
   /** Writes (`undefined` clears) a setting value in `scope` (default:
    *  user). Resolves with an error message to show, or null on success. */
   setExtensionSetting: (
@@ -148,13 +161,26 @@ export const createExtensionSlice: StateCreator<
   marketplaceError: null,
   extensionUpdates: {},
   extensionConfiguration: [],
+  workspaceTrust: {
+    workspace: null,
+    state: 'restricted',
+    decided: false,
+    remote: false,
+    canGrant: false,
+  },
+  workspaceTrustError: null,
 
   refreshExtensions: async () => {
     try {
-      const { extensions, activeTheme, activeIconTheme } = await window.electronAPI.ext.list();
+      const { extensions, activeTheme, activeIconTheme, workspaceTrust } =
+        await window.electronAPI.ext.list();
       applyExtensions(extensions);
       set({
         installedExtensions: extensions,
+        // The list is produced against the trust state main resolved, so it
+        // travels with it: the panel never shows extensions and trust from
+        // two different moments.
+        ...(workspaceTrust ? { workspaceTrust } : {}),
         activeTheme:
           activeTheme &&
           extensions.some(
@@ -320,6 +346,43 @@ export const createExtensionSlice: StateCreator<
       set({ extensionConfiguration: await window.electronAPI.ext.listConfiguration() });
     } catch (err) {
       console.warn('[forge] refreshExtensionConfiguration failed:', (err as Error).message);
+    }
+  },
+
+  refreshWorkspaceTrust: async () => {
+    if (!window.electronAPI?.ext?.trustStatus) return;
+    try {
+      set({ workspaceTrust: await window.electronAPI.ext.trustStatus() });
+    } catch (err) {
+      console.warn('[forge] refreshWorkspaceTrust failed:', (err as Error).message);
+    }
+  },
+
+  applyWorkspaceTrust: (status: WorkspaceTrustStatus) => {
+    set({ workspaceTrust: status, workspaceTrustError: null });
+  },
+
+  setWorkspaceTrusted: async (trusted: boolean) => {
+    set({ workspaceTrustError: null });
+    try {
+      const api = window.electronAPI?.ext;
+      if (!api?.grantWorkspaceTrust || !api?.revokeWorkspaceTrust) {
+        throw new Error('Workspace Trust requiere abrir Forge como app de Electron.');
+      }
+      set({
+        workspaceTrust: trusted
+          ? await api.grantWorkspaceTrust()
+          : await api.revokeWorkspaceTrust(),
+      });
+      // Activation policy follows trust, so the payloads must be re-read.
+      await get().refreshExtensions();
+      return null;
+    } catch (err) {
+      const message = cleanIpcError(
+        (err as Error).message || 'No se pudo cambiar la confianza del workspace.',
+      );
+      set({ workspaceTrustError: message });
+      return message;
     }
   },
 

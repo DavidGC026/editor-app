@@ -416,6 +416,35 @@ export interface ExtensionCompatibilityReport {
   blockers: ExtensionCompatibilityBlocker[];
 }
 
+/** Mirror of `capabilities.*` normalized in the main process. */
+export type ExtensionCapabilitySupport = 'supported' | 'limited' | 'unsupported';
+
+export interface ExtensionCapabilities {
+  untrustedWorkspaces: {
+    supported: ExtensionCapabilitySupport;
+    description: string | null;
+    restrictedConfigurations: string[];
+  };
+  virtualWorkspaces: {
+    supported: ExtensionCapabilitySupport;
+    description: string | null;
+  };
+}
+
+/** What Restricted Mode allows for one extension right now. */
+export type ExtensionTrustActivation = 'allowed' | 'limited' | 'blocked';
+
+/** Trust of the open workspace (Workspace Trust, Milestone 3.0). */
+export interface WorkspaceTrustStatus {
+  workspace: string | null;
+  state: 'trusted' | 'restricted';
+  /** False while the user has never decided for this workspace. */
+  decided: boolean;
+  /** Remote workspaces stay restricted and cannot be granted trust yet. */
+  remote: boolean;
+  canGrant: boolean;
+}
+
 export interface InstalledExtension {
   id: string;
   displayName: string;
@@ -452,6 +481,14 @@ export interface InstalledExtension {
   grammars: ExtensionGrammar[];
   /** Menu items this extension declares (`contributes.menus`). */
   menus: ExtensionMenuItem[];
+  /** Declared `capabilities`, read by the Workspace Trust policy. */
+  capabilities: ExtensionCapabilities;
+  /** What Restricted Mode allows for this extension right now. */
+  trust: {
+    activation: ExtensionTrustActivation;
+    /** Settings the extension ignores while the workspace is untrusted. */
+    restrictedConfigurations: string[];
+  };
 }
 
 /** One menu item contributed via `contributes.menus`, flattened. */
@@ -777,6 +814,7 @@ export interface ElectronAPI {
       extensions: InstalledExtension[];
       activeTheme: string | null;
       activeIconTheme: string | null;
+      workspaceTrust: WorkspaceTrustStatus;
     }>;
     uninstall: (id: string) => Promise<boolean>;
     setEnabled: (id: string, enabled: boolean) => Promise<boolean>;
@@ -794,6 +832,16 @@ export interface ElectronAPI {
     /** Fires after every configuration write ('*' = workspace switched). */
     onConfigurationChanged: (
       callback: (key: string) => void,
+    ) => { dispose: () => void };
+    /** Trust of the open workspace; Restricted Mode is the default. */
+    trustStatus: () => Promise<WorkspaceTrustStatus>;
+    /** Records that the user trusts the open workspace. */
+    grantWorkspaceTrust: () => Promise<WorkspaceTrustStatus>;
+    /** Returns the open workspace to Restricted Mode. */
+    revokeWorkspaceTrust: () => Promise<WorkspaceTrustStatus>;
+    /** Fires after every trust decision and on workspace switch. */
+    onTrustChanged: (
+      callback: (status: WorkspaceTrustStatus) => void,
     ) => { dispose: () => void };
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
