@@ -154,6 +154,14 @@ Criterios de salida:
 
 Objetivo: activar de forma aislada extensiones simples basadas en comandos.
 
+Diseño detallado (runtime, protocolo RPC, activación, modelo de fallos y
+plan de incrementos 3.0–3.6):
+[extensions-phase3-design.md](./extensions-phase3-design.md). Decisiones
+principales: el host corre en un `utilityProcess` de Electron con
+`MessagePortMain`, el renderer nunca habla directamente con él (main hace
+de broker), y el incremento 3.0 es Workspace Trust — el gate de seguridad
+lo exige antes de ejecutar código de terceros.
+
 Trabajo:
 
 - Child process dedicado y bootstrap del host.
