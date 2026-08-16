@@ -152,6 +152,95 @@ export function matchesStroke(chord: ParsedChord, event: KeyStrokeEvent): boolea
   );
 }
 
+// ── Human-readable summaries ────────────────────────────────────────────
+// What the extension detail view shows: the commands an extension
+// declares, each with the shortcut that reaches it on this platform.
+
+/** `KeyboardEvent.key` values → the labels VS Code prints. */
+const EVENT_KEY_TO_LABEL: Record<string, string> = {
+  arrowup: 'Up',
+  arrowdown: 'Down',
+  arrowleft: 'Left',
+  arrowright: 'Right',
+  ' ': 'Space',
+  escape: 'Esc',
+  pageup: 'PageUp',
+  pagedown: 'PageDown',
+};
+
+/** Renders a chord the way the platform writes it: `⇧⌘P` on macOS,
+ *  `Ctrl+Shift+P` elsewhere. Returns null when the chord is unsupported
+ *  (multi-stroke), which is also what the dispatcher refuses to register. */
+export function formatChord(chord: string, platform: KeybindingPlatform): string | null {
+  const parsed = parseChord(chord);
+  if (!parsed) return null;
+  const key =
+    EVENT_KEY_TO_LABEL[parsed.key] ??
+    (parsed.key.length === 1 ? parsed.key.toUpperCase() : parsed.key.replace(/^f(\d+)$/, 'F$1'));
+  if (platform === 'mac') {
+    return `${parsed.ctrl ? '⌃' : ''}${parsed.alt ? '⌥' : ''}${parsed.shift ? '⇧' : ''}${parsed.meta ? '⌘' : ''}${key}`;
+  }
+  const parts: string[] = [];
+  if (parsed.ctrl) parts.push('Ctrl');
+  if (parsed.shift) parts.push('Shift');
+  if (parsed.alt) parts.push('Alt');
+  if (parsed.meta) parts.push(platform === 'win' ? 'Win' : 'Super');
+  parts.push(key);
+  return parts.join('+');
+}
+
+/** A command as the detail view lists it. */
+export interface CommandSummary {
+  command: string;
+  /** Category-prefixed title, falling back to the raw id. */
+  title: string;
+  enablement: string | null;
+  /** Shortcuts reaching this command on `platform`, in declaration order.
+   *  `label` is null for chords Forge cannot dispatch yet. */
+  keybindings: { label: string | null; chord: string; when: string | null }[];
+}
+
+/** Pairs an extension's declared commands with its keybindings. Bindings
+ *  that target a command the extension does not declare are listed too —
+ *  VS Code allows re-binding another extension's (or a built-in) command,
+ *  and hiding them would misrepresent what the extension changes. */
+export function summarizeCommands(
+  extension: {
+    commands: { command: string; title: string; category: string | null; enablement: string | null }[];
+    keybindings: ExtensionKeybindingContribution[];
+  },
+  platform: KeybindingPlatform,
+): CommandSummary[] {
+  const summaries = new Map<string, CommandSummary>();
+  for (const cmd of extension.commands ?? []) {
+    summaries.set(cmd.command, {
+      command: cmd.command,
+      title: cmd.category ? `${cmd.category}: ${cmd.title}` : cmd.title,
+      enablement: cmd.enablement,
+      keybindings: [],
+    });
+  }
+  for (const binding of extension.keybindings ?? []) {
+    let summary = summaries.get(binding.command);
+    if (!summary) {
+      summary = {
+        command: binding.command,
+        title: binding.command,
+        enablement: null,
+        keybindings: [],
+      };
+      summaries.set(binding.command, summary);
+    }
+    const chord = chordForPlatform(binding, platform);
+    summary.keybindings.push({
+      label: formatChord(chord, platform),
+      chord,
+      when: binding.when,
+    });
+  }
+  return [...summaries.values()];
+}
+
 export interface KeybindingServiceOptions {
   /** Evaluates a binding's when-clause (null always matches). */
   matchWhen: (expression: string | null) => boolean;
@@ -167,7 +256,7 @@ interface RegisteredKeybinding {
   when: string | null;
 }
 
-function detectPlatform(): KeybindingPlatform {
+export function detectPlatform(): KeybindingPlatform {
   const platform = typeof navigator === 'undefined' ? '' : navigator.platform.toLowerCase();
   if (platform.includes('mac')) return 'mac';
   if (platform.includes('win')) return 'win';

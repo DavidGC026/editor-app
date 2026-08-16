@@ -452,12 +452,55 @@ del editor.
   `ContextKeyService` mantiene una sola semántica de `when` en todo el
   workbench.
 
+## Incremento 2.7 — comandos y atajos en la vista de detalle
+
+Completado (2026-08-15):
+
+- **Helpers puros en `commands.ts`**: `formatChord(chord, platform)` rinde
+  el atajo con la notación de la plataforma (`⇧⌘P` en macOS,
+  `Ctrl+Shift+P` en el resto, `Win`/`Super` para meta) y devuelve `null`
+  para los chords que el dispatcher no soporta — el mismo criterio que usa
+  `KeybindingService.register`, así que la UI no puede prometer un atajo que
+  no funciona. `summarizeCommands(extension, platform)` empareja los
+  `contributes.commands` con sus keybindings resueltos para la plataforma.
+  `detectPlatform` pasa a exportarse para que la vista use la misma
+  detección que el despacho.
+- **`ExtensionContributionsSection`**: lista por comando el título
+  (prefijado con la categoría), el id, los atajos como badges —en ámbar y
+  marcados `unsupported` cuando no hay label—, las superficies donde
+  aparece (traducidas desde el menu id: "Explorer menu", "Editor menu",
+  "Command palette") y su `enablement`. Los comandos sin handler llevan un
+  "needs the Extension Host" en vez de aparentar ser ejecutables.
+- La sección se monta en la barra lateral de `ExtensionDetailView`, sobre
+  los settings, y sólo para extensiones instaladas.
+
+Pruebas añadidas (`tests/extensions/commands-keybindings.test.cjs`, 4 casos,
+105 en total): notación por plataforma incluidas teclas con nombre y
+funciones, chords multi-stroke sin label, emparejado comando↔atajo con
+resolución por plataforma, bindings a comandos no declarados por la
+extensión (re-binding de un comando ajeno, que VS Code permite) y varios
+atajos para un mismo comando.
+
+### Decisiones del incremento 2.7
+
+- **Los bindings a comandos ajenos se listan igual**: ocultarlos
+  tergiversaría lo que la extensión cambia en el editor; sin título que
+  resolver, se muestra el id, como en los menús.
+- **Una sola fuente para "soportado"**: la UI no reimplementa el parseo de
+  chords; llama a `parseChord` a través de `formatChord`, de modo que
+  cualquier chord que el dispatcher gane en el futuro aparece en la vista
+  sin tocar el componente.
+
+Con esto el Milestone 2 queda completo: todas las familias declarativas del
+roadmap (`themes`, `snippets`, `languages`, `iconThemes`, `grammars`,
+`configuration`, `commands`, `keybindings`, `menus`) tienen normalización,
+ownership y superficie de usuario.
+
 ## Próximo incremento
 
-1. Superficie de keybindings/comandos en la vista de detalle de la
-   extensión (lo último que queda del motor declarativo), o los menu ids
-   restantes según aparezcan sus superficies.
-2. Con el Milestone 2 completo, arrancar el Milestone 3 (kernel del Node
-   Extension Host) — comandos, menús del explorador, menús del editor y
-   keybindings ya ejecutan por el `ExtensionCommandService`, que es el
-   punto donde el host registrará handlers reales.
+Milestone 3 — kernel del Node Extension Host. Los comandos, menús del
+explorador, menús del editor y keybindings ya ejecutan por el
+`ExtensionCommandService`, que es el punto exacto donde el host registrará
+handlers reales; la vista de detalle ya marca qué comandos siguen sin
+handler, así que el avance del milestone será visible sin instrumentación
+extra.

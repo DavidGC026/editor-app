@@ -88,7 +88,7 @@ Criterios de salida:
 
 Objetivo: maximizar compatibilidad segura antes del Extension Host.
 
-Estado: **en progreso**. Incremento 2.0 completó `contributes.configuration`
+Estado: **completado**. Incremento 2.0 completó `contributes.configuration`
 y `configurationDefaults` end-to-end: normalización en el manifest reader,
 `ConfigurationService` con precedencia default < override < user, puerto de
 persistencia de valores de usuario, validación de escrituras contra el
@@ -120,7 +120,11 @@ contextual de Monaco: acciones globales con ids namespaciados por dueño,
 `group@order` traducido a los campos de Monaco y — como Monaco no admite
 predicados de visibilidad — un conjunto registrado que se reconcilia por
 diff cuando cambian las extensiones o las context keys, con las keys
-`resource*` del tab activo publicadas por el workbench. Progreso detallado:
+`resource*` del tab activo publicadas por el workbench. Incremento 2.7
+cerró el milestone con la superficie de usuario que faltaba: la vista de
+detalle lista los comandos de la extensión con su atajo en la notación de
+la plataforma, dónde aparece cada uno y cuáles siguen esperando al
+Extension Host. Progreso detallado:
 [extensions-phase2-progress.md](./extensions-phase2-progress.md)
 
 Orden de contribution points:

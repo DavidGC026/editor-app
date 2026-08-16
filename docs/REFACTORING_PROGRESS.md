@@ -136,6 +136,13 @@ El archivo principal de estado global (`store.ts`) creció desmesuradamente a ~2
   (coalescidos en microtask). `editorResourceContext` publica las keys
   `resource*` del tab activo y la ejecución pasa por el
   `ExtensionCommandService` con la ruta como argumento.
+- **Extensiones Milestone 2.7**: comandos y atajos en la vista de detalle —
+  `formatChord` (notación por plataforma, `null` para los chords que el
+  dispatcher no soporta) y `summarizeCommands` emparejando
+  `contributes.commands` con sus keybindings; `ExtensionContributionsSection`
+  muestra título, id, badges de atajo, superficies donde aparece el comando
+  y `enablement`, marcando los que aún necesitan el Extension Host. Cierra
+  el Milestone 2.
 
 Actualmente `store.ts` ha delegado Layout, Terminal, Git, Remote y Extensiones a
 slices específicos.

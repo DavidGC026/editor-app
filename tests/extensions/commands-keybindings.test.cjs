@@ -15,6 +15,8 @@ const {
   KeybindingService,
   parseChord,
   chordForPlatform,
+  formatChord,
+  summarizeCommands,
 } = require('../../src/extensions/commands.ts');
 
 // ── Manifest normalization ──────────────────────────────────────────────
@@ -285,4 +287,77 @@ test('unsupported chords warn and register nothing', () => {
   assert.equal(h.warnings.length, 1);
   registration.dispose(); // inert disposable must not throw
   assert.equal(h.service.dispatch(stroke('k', { ctrlKey: true })), false);
+});
+
+// ── Detail-view summaries ───────────────────────────────────────────────
+
+test('chords render with the platform’s own notation', () => {
+  assert.equal(formatChord('ctrl+shift+p', 'linux'), 'Ctrl+Shift+P');
+  assert.equal(formatChord('ctrl+shift+p', 'win'), 'Ctrl+Shift+P');
+  assert.equal(formatChord('cmd+shift+p', 'mac'), '⇧⌘P');
+  assert.equal(formatChord('meta+k', 'win'), 'Win+K');
+  assert.equal(formatChord('alt+f12', 'linux'), 'Alt+F12');
+  assert.equal(formatChord('ctrl+up', 'linux'), 'Ctrl+Up');
+  assert.equal(formatChord('shift+space', 'linux'), 'Shift+Space');
+  // Multi-stroke chords have no label: the dispatcher cannot run them.
+  assert.equal(formatChord('ctrl+k ctrl+s', 'linux'), null);
+});
+
+test('summarizeCommands pairs commands with their platform shortcut', () => {
+  const summaries = summarizeCommands(
+    {
+      commands: [
+        { command: 'demo.run', title: 'Run', category: 'Demo', enablement: 'workspaceOpen' },
+        { command: 'demo.idle', title: 'Idle', category: null, enablement: null },
+      ],
+      keybindings: [
+        { command: 'demo.run', key: 'ctrl+alt+r', mac: 'cmd+alt+r', linux: null, win: null, when: 'editorIsOpen' },
+      ],
+    },
+    'mac',
+  );
+
+  assert.deepEqual(summaries.map((s) => s.title), ['Demo: Run', 'Idle']);
+  assert.equal(summaries[0].enablement, 'workspaceOpen');
+  assert.deepEqual(summaries[0].keybindings, [
+    { label: '⌥⌘R', chord: 'cmd+alt+r', when: 'editorIsOpen' },
+  ]);
+  assert.deepEqual(summaries[1].keybindings, []);
+});
+
+test('a binding for an undeclared command is still listed', () => {
+  const summaries = summarizeCommands(
+    {
+      commands: [],
+      keybindings: [
+        { command: 'workbench.action.files.save', key: 'ctrl+s', mac: null, linux: null, win: null, when: null },
+      ],
+    },
+    'linux',
+  );
+
+  // No title to resolve: the id stands in, as it does in the menus.
+  assert.deepEqual(summaries, [
+    {
+      command: 'workbench.action.files.save',
+      title: 'workbench.action.files.save',
+      enablement: null,
+      keybindings: [{ label: 'Ctrl+S', chord: 'ctrl+s', when: null }],
+    },
+  ]);
+});
+
+test('several bindings for one command are all reported', () => {
+  const [summary] = summarizeCommands(
+    {
+      commands: [{ command: 'demo.run', title: 'Run', category: null, enablement: null }],
+      keybindings: [
+        { command: 'demo.run', key: 'ctrl+f5', mac: null, linux: null, win: null, when: null },
+        { command: 'demo.run', key: 'ctrl+k ctrl+r', mac: null, linux: null, win: null, when: null },
+      ],
+    },
+    'linux',
+  );
+
+  assert.deepEqual(summary.keybindings.map((b) => b.label), ['Ctrl+F5', null]);
 });

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { MarketplaceExtension, MarketplaceExtensionDetail } from '../types';
 import ExtensionSettingsSection from './ExtensionSettingsSection';
+import ExtensionContributionsSection from './ExtensionContributionsSection';
 
 function formatCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -517,6 +518,8 @@ export default function ExtensionDetailView({ extension }: { extension: Marketpl
                 {detail.bugs && <ResourceLink label="Issues" url={detail.bugs} />}
               </SidebarSection>
             )}
+
+            {installed && <ExtensionContributionsSection extension={installed} />}
 
             {installed && <ExtensionSettingsSection extensionId={installed.id} />}
 
