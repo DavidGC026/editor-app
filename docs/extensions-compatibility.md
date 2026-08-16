@@ -19,33 +19,40 @@ Definition of Done de la arquitectura.
 La UI debe mostrar nivel, razones y evidencia; nunca reducirlo a un badge
 genérico “Active”.
 
-## Estado real al 2026-07-15
+## Estado real al 2026-08-15
+
+Actualizada al cierre del Milestone 2
+([extensions-phase2-progress.md](./extensions-phase2-progress.md)).
 
 | Área | Estado | Observaciones |
 | --- | --- | --- |
-| Open VSX search/detail | `partial` | Búsqueda, detalle y README; sin paginación rica, versions ni updates |
-| Instalación Open VSX | `partial` | Funciona, pero aún no es transaccional ni conserva hash/provenance |
-| VSIX local | `partial` | Valida estructura y zip-slip básico; falta trust e integridad completa |
-| Uninstall | `partial` | Elimina paquete/registry; falta lifecycle/rollback/dependencies |
-| Registry local | `partial` | Puerto/adaptador tipado y migración legacy; escritura atómica pendiente |
-| IPC de tienda | `partial` | Preload tipado y handshake list v1; envelopes/validación runtime pendientes |
-| Color themes | `partial` | Conversión aproximada TextMate → tokens Monaco |
-| Snippets | `partial` | Completion provider; faltan algunos detalles/precedencia de VS Code |
-| Languages | `partial` | Registro y configuración básica; regex y campos no cubiertos totalmente |
+| Open VSX search/detail | `partial` | Búsqueda, detalle y README; sin paginación rica ni selector de versiones |
+| Instalación Open VSX | `compatible` | Transaccional con staging, hash y provenance; deps resueltas por adelantado |
+| VSIX local | `partial` | Valida estructura y zip-slip; falta Workspace Trust (Milestone 3.0) |
+| Uninstall | `partial` | Elimina paquete/registry con sweep de huérfanos; falta lifecycle del host |
+| Update/rollback | `compatible` | Update por extensión y rollback a la versión previa conservada |
+| Registry local | `compatible` | Puerto/adaptador tipado, escritura atómica y decoder tolerante con legacy |
+| IPC de tienda | `partial` | Preload tipado, handshake list v1 y canales `ext:config:*`; envelope RPC general pendiente |
+| Color themes | `partial` | Conversión aproximada TextMate → tokens Monaco; Monaco no permite retirar un tema |
+| Snippets | `declarative` | Providers por extensión con ownership y cleanup |
+| Languages | `declarative` | Registro y configuración con ownership; algunos campos sin cubrir |
 | Icon themes | `metadata` | Se parsean y seleccionan en UI, pero no se aplican al explorer |
 | Recursos declarativos | `partial` | Readers aislados y path traversal bloqueado; falta package validation completa |
-| Analyzer | `partial` | Estado activo basado en carga real; reporte rico de blockers pendiente |
-| Grammars | `unsupported` | No hay TextMate registry |
-| Configuration | `unsupported` | No hay scopes/schema/settings UI de extensiones |
-| Commands/keybindings/menus | `unsupported` | No existe contribution/context-key pipeline |
-| Extension `main` | `metadata` | No se ejecuta código Node |
+| Analyzer | `partial` | Estado y familias soportadas por carga real; reporte rico de blockers pendiente |
+| Grammars | `declarative` | TextMate real (vscode-textmate + oniguruma WASM) con estado multi-línea e inyecciones |
+| Configuration | `declarative` | Scopes default < override < user < workspace, validación y settings UI |
+| Commands | `declarative` | Metadata, paleta y `enablement`; sin handler hasta el Extension Host |
+| Keybindings | `declarative` | Chords single-stroke por plataforma, gated por `when`, tras los atajos nativos |
+| Menus | `declarative` | `explorer/context` y `editor/context` con `when` y grupos de VS Code |
+| Context keys / `when` | `declarative` | Parser propio con la precedencia de VS Code y keys publicadas por el workbench |
+| Extension `main` | `metadata` | No se ejecuta código Node — Milestone 3, ver [extensions-phase3-design.md](./extensions-phase3-design.md) |
 | Extension `browser` | `metadata` | No existe Web Extension Host |
 | Activation events | `metadata` | Se muestran, no se despachan |
 | VS Code API | `unsupported` | No existe módulo `vscode` compatible |
 | LSP/DAP/tasks/testing | `unsupported` | Forge tiene piezas nativas, aún sin bridge de extensiones |
 | Views/webviews/notebooks | `unsupported` | Sin workbench contribution hosts |
 | Remote extension host | `unsupported` | Remote SSH no ejecuta extensiones junto al workspace |
-| Workspace Trust | `unsupported` | Bloqueador para ejecutar código de terceros |
+| Workspace Trust | `unsupported` | Bloqueador para ejecutar código de terceros; es el incremento 3.0 |
 
 ## Matriz objetivo por contribution point
 
