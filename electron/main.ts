@@ -32,7 +32,15 @@ import {
   searchOpenVsx,
   getOpenVsxDetail,
   listExtensions,
+  listConfiguration,
+  setConfigurationValue,
+  configureExtensionWorkspace,
+  onExtensionConfigurationChanged,
+  checkExtensionUpdates,
+  rollbackExtension,
+  sweepExtensionStore,
   uninstallExtension,
+  setExtensionEnabled,
   setActiveTheme,
   setActiveIconTheme,
 } from './extensions';
@@ -268,6 +276,20 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * Quotes a user-provided remote directory while preserving the shell's home
+ * expansion. A plain shellQuote("~") produces the literal directory "~".
+ */
+function remoteDirectoryExpression(remotePath: string): string {
+  const trimmed = remotePath.trim() || '~';
+  if (trimmed === '~') return '"$HOME"';
+  if (trimmed.startsWith('~/')) {
+    const relativePath = trimmed.slice(2);
+    return relativePath ? `"$HOME"/${shellQuote(relativePath)}` : '"$HOME"';
+  }
+  return shellQuote(trimmed);
+}
+
 function isRemoteWorkspacePath(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('ssh://');
 }
@@ -367,11 +389,34 @@ function runInteractiveSshCommand(target: string, command: string): Promise<Buff
 async function assertRemoteDirectory(target: string, remotePath: string): Promise<string> {
   const out = await runInteractiveSshCommand(
     target,
-    `cd ${shellQuote(remotePath)} && pwd -P`,
+    `cd ${remoteDirectoryExpression(remotePath)} && pwd -P`,
   );
   const resolved = out.toString('utf8').trim();
   if (!resolved) throw new Error('No se pudo resolver la carpeta remota.');
   return resolved;
+}
+
+async function browseRemoteDirectory(
+  target: string,
+  remotePath: string,
+): Promise<{ path: string; parent: string | null; directories: { name: string; path: string }[] }> {
+  const resolvedPath = await assertRemoteDirectory(target, remotePath);
+  const output = await runSshCommand(
+    target,
+    [
+      `cd ${shellQuote(resolvedPath)} || exit 2`,
+      `printf '%s\\0' "$PWD"`,
+      `find . -mindepth 1 -maxdepth 1 -type d -printf '%f\\0'`,
+    ].join(' && '),
+  );
+  const values = output.toString('utf8').split('\0');
+  const currentPath = values.shift() || resolvedPath;
+  const directories = values
+    .filter((name) => name && name !== '.' && name !== '..')
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({ name, path: remoteChildPath(currentPath, name) }));
+  const parent = currentPath === '/' ? null : splitRemoteParent(currentPath);
+  return { path: currentPath, parent, directories };
 }
 
 async function readRemoteDirectoryRecursive(uri: string): Promise<TreeNode[]> {
@@ -649,6 +694,21 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle(
+  'remote:browse',
+  async (_event, args: { target?: string; path?: string }) => {
+    const target = typeof args?.target === 'string' ? args.target.trim() : '';
+    const requestedPath = typeof args?.path === 'string' && args.path.trim()
+      ? args.path.trim()
+      : '~';
+    if (!target) throw new Error('Debes indicar un host SSH.');
+    if (/\s|[\x00-\x1f]/.test(target)) {
+      throw new Error('El host SSH no puede contener espacios.');
+    }
+    return browseRemoteDirectory(target, requestedPath);
+  },
+);
+
 ipcMain.handle('fs:readDirectory', async (_event, dirPath: string) => {
   try {
     if (isRemoteWorkspacePath(dirPath)) {
@@ -825,6 +885,9 @@ ipcMain.handle('fs:watch', async (_event, dirPath: string) => {
   if (dirPath) {
     currentWorkspacePath = dirPath;
     setLastWorkspaceInStore(dirPath);
+    // Workspace-scope settings follow the open workspace: let renderers
+    // re-resolve their configuration against the new .forge/settings.json.
+    broadcastExtensionConfigChange('*');
   }
   if (isRemoteWorkspacePath(dirPath)) {
     closeWorkspaceWatcher();
@@ -1891,6 +1954,53 @@ ipcMain.handle('ext:uninstall', async (_event, id: string) => {
   return uninstallExtension(id);
 });
 
+ipcMain.handle('ext:setEnabled', async (_event, id: string, enabled: boolean) => {
+  if (typeof id !== 'string' || !id) return false;
+  return setExtensionEnabled(id, enabled !== false);
+});
+
+ipcMain.handle('ext:checkUpdates', async () => {
+  return checkExtensionUpdates();
+});
+
+// Workspace-scope settings resolve against the open local workspace; the
+// facade receives a provider instead of reaching into main's state.
+configureExtensionWorkspace(() =>
+  currentWorkspacePath && !isRemoteWorkspacePath(currentWorkspacePath)
+    ? currentWorkspacePath
+    : null,
+);
+
+function broadcastExtensionConfigChange(key: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('ext:config:changed', { key });
+  }
+}
+
+onExtensionConfigurationChanged(broadcastExtensionConfigChange);
+
+ipcMain.handle('ext:config:list', async () => {
+  return listConfiguration();
+});
+
+ipcMain.handle(
+  'ext:config:set',
+  async (_event, key: string, value: unknown, scope?: string) => {
+    if (typeof key !== 'string' || !key.trim()) {
+      throw new Error('Clave de setting requerida.');
+    }
+    setConfigurationValue(key, value, scope === 'workspace' ? 'workspace' : 'user');
+    return true;
+  },
+);
+
+ipcMain.handle('ext:rollback', async (_event, id: string) => {
+  if (typeof id !== 'string' || !id) {
+    throw new Error('Identificador de extensión requerido.');
+  }
+  return rollbackExtension(id);
+});
+
 ipcMain.handle('ext:setActiveTheme', async (_event, themeId: string | null) => {
   setActiveTheme(typeof themeId === 'string' && themeId ? themeId : null);
   return true;
@@ -1989,6 +2099,9 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.warn('[forge:claude] IDE server unavailable:', (err as Error).message);
   }
+  // No install is in flight yet: safe moment to drop abandoned staging and
+  // orphan directories a post-commit failure could have left in the store.
+  sweepExtensionStore();
   createWindow();
 });
 

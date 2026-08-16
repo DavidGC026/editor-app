@@ -8,10 +8,12 @@ import {
   Download,
   FileArchive,
   Globe,
+  History,
   Loader2,
   PackageCheck,
   Palette,
   Play,
+  Power,
   Search,
   ShieldCheck,
   Star,
@@ -31,10 +33,11 @@ function extensionInitial(ext: MarketplaceExtension): string {
   return (ext.displayName || ext.name || '?').trim().charAt(0).toUpperCase();
 }
 
+// Claude Code and Codex are deliberately NOT mapped here: they run as terminal
+// agents (AgentsPanel) and will land as independent extensions once the
+// Extension Host exists.
 function agentCommandForExtension(ext: MarketplaceExtension): string | null {
   const normalized = ext.id.toLowerCase();
-  if (normalized === 'openai.chatgpt') return 'codex';
-  if (normalized === 'anthropic.claude-code') return 'claude';
   const haystack = `${ext.id} ${ext.displayName} ${ext.description}`.toLowerCase();
   if (haystack.includes('cursor agent') || normalized.includes('cursor-agent')) {
     return 'cursor-agent';
@@ -48,8 +51,6 @@ function agentCommandForExtension(ext: MarketplaceExtension): string | null {
 /** Detect agent CLI command for installed extensions (mirrors marketplace helper). */
 function agentCommandForInstalledExtension(ext: InstalledExtension): string | null {
   const normalized = ext.id.toLowerCase();
-  if (normalized === 'openai.chatgpt') return 'codex';
-  if (normalized === 'anthropic.claude-code') return 'claude';
   const haystack = `${ext.id} ${ext.displayName} ${ext.description}`.toLowerCase();
   if (haystack.includes('cursor agent') || normalized.includes('cursor-agent')) return 'cursor-agent';
   if (haystack.includes('antigravity') || normalized.includes('antigravity') || normalized.includes('agy')) return 'agy';
@@ -72,58 +73,57 @@ function formatterCliCommand(ext: InstalledExtension): string | null {
   return null;
 }
 
-/** Nuanced runtime label for installed extensions. */
+/** Runtime label derived from the main-process compatibility report. */
 function extensionRuntimeLabel(ext: InstalledExtension): { label: string; tone: string } {
   const agentCmd = agentCommandForInstalledExtension(ext);
-  const declarative = ext.supported?.declarative ?? [];
-  const needsHost = ext.supported?.requiresExtensionHost ?? false;
+  const report = ext.compatibility;
 
+  if (ext.enabled === false) {
+    return {
+      label: 'Disabled',
+      tone: 'border-forge-border/70 bg-forge-input/70 text-forge-text/45',
+    };
+  }
   if (agentCmd) {
     return {
       label: 'Terminal Agent',
       tone: 'border-blue-400/30 bg-blue-400/10 text-blue-300',
     };
   }
-  if (declarative.length > 0 && !needsHost) {
-    return {
-      label: 'Active',
-      tone: 'border-forge-accent/25 bg-forge-accent/10 text-forge-accent',
-    };
+  const needsHost = report.blockers.some((b) => b.kind === 'requires-extension-host');
+  switch (report.level) {
+    case 'full':
+      return {
+        label: 'Active',
+        tone: 'border-forge-accent/25 bg-forge-accent/10 text-forge-accent',
+      };
+    case 'partial':
+      return {
+        label: 'Partial',
+        tone: 'border-amber-400/25 bg-amber-400/10 text-amber-200/90',
+      };
+    default:
+      return {
+        label: needsHost ? 'Extension Host required' : 'Metadata only',
+        tone: 'border-forge-border/70 bg-forge-input/70 text-forge-text/55',
+      };
   }
-  if (declarative.length > 0 && needsHost) {
-    return {
-      label: 'Partial',
-      tone: 'border-amber-400/25 bg-amber-400/10 text-amber-200/90',
-    };
-  }
-  if (needsHost) {
-    return {
-      label: 'Extension Host required',
-      tone: 'border-forge-border/70 bg-forge-input/70 text-forge-text/55',
-    };
-  }
-  return {
-    label: 'Metadata only',
-    tone: 'border-forge-border/70 bg-forge-input/70 text-forge-text/55',
-  };
 }
 
-/** Categorise contributes into active (declarative) vs pending (need host). */
-function extensionCapabilitySummary(ext: InstalledExtension): { active: string[]; pending: string[] } {
-  const active: string[] = [];
-  const pending: string[] = [];
-  const declarative = ext.supported?.declarative ?? [];
-  const allContributes = ext.contributes ?? [];
-
-  for (const key of allContributes) {
-    if (declarative.includes(key)) {
-      active.push(key);
-    } else {
-      pending.push(key);
-    }
+/** Human-readable reason a pending contribution is not active yet. */
+function pendingContributionReason(ext: InstalledExtension, contribution: string): string {
+  const blocker = ext.compatibility.blockers.find(
+    (b) => 'contribution' in b && b.contribution === contribution,
+  );
+  switch (blocker?.kind) {
+    case 'integration-pending':
+      return 'loaded, workbench integration pending';
+    case 'contribution-load-failed':
+      return 'failed to load from the package';
+    case 'unsupported-contribution':
+    default:
+      return 'requires Extension Host';
   }
-
-  return { active, pending };
 }
 
 export default function ExtensionsPanel() {
@@ -139,6 +139,11 @@ export default function ExtensionsPanel() {
   const installVsixExtension = useStore((s) => s.installVsixExtension);
   const installExtensionById = useStore((s) => s.installExtensionById);
   const uninstallExtension = useStore((s) => s.uninstallExtension);
+  const setExtensionEnabled = useStore((s) => s.setExtensionEnabled);
+  const rollbackExtension = useStore((s) => s.rollbackExtension);
+  const extensionUpdates = useStore((s) => s.extensionUpdates);
+  const checkExtensionUpdates = useStore((s) => s.checkExtensionUpdates);
+  const updateExtension = useStore((s) => s.updateExtension);
   const setColorTheme = useStore((s) => s.setColorTheme);
   const setIconTheme = useStore((s) => s.setIconTheme);
   const runAgentInTerminal = useStore((s) => s.runAgentInTerminal);
@@ -152,19 +157,26 @@ export default function ExtensionsPanel() {
     [installedExtensions],
   );
 
+  // Disabled extensions keep their metadata but stop offering their themes.
+  const enabledExtensions = installedExtensions.filter((ext) => ext.enabled !== false);
+
   const themeOptions: { id: string; label: string; source: string }[] = [
     { id: 'forge-dark', label: 'Forge Dark', source: 'built-in' },
-    ...installedExtensions.flatMap((ext) =>
+    ...enabledExtensions.flatMap((ext) =>
       ext.themes.map((t) => ({ id: t.id, label: t.label, source: ext.displayName })),
     ),
   ];
 
   const iconThemeOptions: { id: string; label: string; source: string }[] = [
     { id: 'none', label: 'None', source: 'built-in' },
-    ...installedExtensions.flatMap((ext) =>
+    ...enabledExtensions.flatMap((ext) =>
       (ext.iconThemes || []).map((t) => ({ id: t.id, label: t.label, source: ext.displayName })),
     ),
   ];
+
+  useEffect(() => {
+    void checkExtensionUpdates();
+  }, [checkExtensionUpdates]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -420,9 +432,11 @@ export default function ExtensionsPanel() {
           ) : (
             installedExtensions.map((ext) => {
               const { label: runtimeLabel, tone: runtimeTone } = extensionRuntimeLabel(ext);
-              const { active: activeCaps, pending: pendingCaps } = extensionCapabilitySummary(ext);
+              const activeCaps = ext.compatibility.supportedContributions;
+              const pendingCaps = ext.compatibility.pendingContributions;
               const agentCmd = agentCommandForInstalledExtension(ext);
               const fmtCmd = formatterCliCommand(ext);
+              const latestVersion = extensionUpdates[ext.id];
 
               return (
                 <div
@@ -454,6 +468,37 @@ export default function ExtensionsPanel() {
                           <Play size={12} />
                         </button>
                       )}
+                      {latestVersion && (
+                        <button
+                          title={`Update to v${latestVersion}`}
+                          onClick={() => void updateExtension(ext.id)}
+                          disabled={extBusy}
+                          className="w-6 h-6 flex items-center justify-center rounded text-amber-300 bg-amber-400/10 hover:bg-amber-400/20 transition-colors flex-shrink-0 disabled:opacity-30"
+                        >
+                          <Download size={13} />
+                        </button>
+                      )}
+                      {ext.previousVersion && (
+                        <button
+                          title={`Roll back to v${ext.previousVersion}`}
+                          onClick={() => void rollbackExtension(ext.id)}
+                          disabled={extBusy}
+                          className="opacity-0 group-hover:opacity-70 hover:!opacity-100 w-6 h-6 flex items-center justify-center rounded text-forge-text hover:bg-white/10 transition-colors flex-shrink-0 disabled:opacity-30"
+                        >
+                          <History size={13} />
+                        </button>
+                      )}
+                      <button
+                        title={ext.enabled === false ? 'Enable extension' : 'Disable extension'}
+                        onClick={() => void setExtensionEnabled(ext.id, ext.enabled === false)}
+                        className={`w-6 h-6 flex items-center justify-center rounded transition-colors flex-shrink-0 ${
+                          ext.enabled === false
+                            ? 'text-forge-text/40 hover:text-forge-accent hover:bg-forge-accent/10'
+                            : 'opacity-0 group-hover:opacity-70 hover:!opacity-100 text-forge-text'
+                        }`}
+                      >
+                        <Power size={13} />
+                      </button>
                       <button
                         title="Uninstall"
                         onClick={() => void uninstallExtension(ext.id)}
@@ -506,7 +551,7 @@ export default function ExtensionsPanel() {
                       {pendingCaps.map((cap) => (
                         <span
                           key={cap}
-                          title={`${cap} — requires Extension Host`}
+                          title={`${cap} — ${pendingContributionReason(ext, cap)}`}
                           className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] bg-forge-input/60 text-forge-text/40 border border-forge-border/40"
                         >
                           <AlertTriangle size={8} className="flex-shrink-0" />

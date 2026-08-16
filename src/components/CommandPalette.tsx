@@ -2,6 +2,8 @@ import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../store';
 import type { Command } from '../types';
 import { buildCommands, categoryOrder } from '../commandRegistry';
+import { contextKeys } from '../extensions/contextKeys';
+import { extensionCommandService } from '../extensions/registry';
 import { fuzzyMatchCommand } from '../utils/fuzzy';
 import { loadRecentCommandIds, recordRecentCommand } from '../utils/recentCommands';
 import {
@@ -169,9 +171,38 @@ export default function CommandPalette() {
     ],
   );
 
+  // Declarative commands from enabled extensions, gated by their
+  // `enablement` when-clauses. Handlers arrive with the Extension Host
+  // (Milestone 3); until then execution is a well-reported no-op.
+  const extensionCommandEntries: Command[] = useMemo(
+    () =>
+      installedExtensions
+        .filter((ext) => ext.enabled !== false)
+        .flatMap((ext) =>
+          (ext.commands ?? [])
+            .filter((cmd) => contextKeys.match(cmd.enablement))
+            .map((cmd) => ({
+              id: `ext-cmd-${cmd.command}`,
+              label: cmd.category ? `${cmd.category}: ${cmd.title}` : cmd.title,
+              category: 'Extensions',
+              keywords: [cmd.command, ext.displayName],
+              action: () => {
+                extensionCommandService.execute(cmd.command);
+                close();
+              },
+            })),
+        ),
+    [installedExtensions, close],
+  );
+
+  const paletteCommands = useMemo(
+    () => [...allCommands, ...extensionCommandEntries],
+    [allCommands, extensionCommandEntries],
+  );
+
   const commandMap = useMemo(
-    () => new Map(allCommands.map((cmd) => [cmd.id, cmd])),
-    [allCommands],
+    () => new Map(paletteCommands.map((cmd) => [cmd.id, cmd])),
+    [paletteCommands],
   );
 
   const groups: DisplayGroup[] = useMemo(() => {
@@ -208,7 +239,7 @@ export default function CommandPalette() {
         'ctx-save-active',
         'git-toggle-diff',
       ]);
-      const contextual = allCommands.filter((cmd) => contextualIds.has(cmd.id));
+      const contextual = paletteCommands.filter((cmd) => contextualIds.has(cmd.id));
       const contextualSet = new Set(contextual.map((c) => c.id));
 
       const byCategory = new Map<string, Command[]>();
@@ -218,7 +249,7 @@ export default function CommandPalette() {
         list.push(cmd);
         byCategory.set(cat, list);
       }
-      for (const cmd of allCommands) {
+      for (const cmd of paletteCommands) {
         if (contextualSet.has(cmd.id)) continue;
         if (recent.some((r) => r.id === cmd.id)) continue;
         const cat = cmd.category || 'Other';
@@ -237,7 +268,7 @@ export default function CommandPalette() {
       return result;
     }
 
-    const scored = allCommands
+    const scored = paletteCommands
       .map((cmd) => ({
         cmd,
         score: fuzzyMatchCommand(cmd.label, trimmed, [
@@ -249,7 +280,7 @@ export default function CommandPalette() {
       .sort((a, b) => b.score - a.score);
 
     return [{ category: 'Results', commands: scored.map((s) => s.cmd) }];
-  }, [query, allCommands, commandMap, installExtensionById, close]);
+  }, [query, paletteCommands, commandMap, installExtensionById, close]);
 
   const flatCommands = useMemo(
     () => groups.flatMap((g) => g.commands),

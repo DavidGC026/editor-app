@@ -1,5 +1,6 @@
 import { StateCreator } from 'zustand';
 import { AgentTerminalId, TerminalSession, SidebarPanel, BottomTab } from '../../types';
+import { terminalSessionManager } from '../../services/terminalSessionManager';
 
 const AGENT_TERMINAL_CONFIG: Record<AgentTerminalId, { label: string; command: string }> = {
   codex: { label: 'Codex', command: 'codex' },
@@ -92,12 +93,11 @@ export const createTerminalSlice: StateCreator<
     const state = get();
     const session = state.terminalSessions.find((s) => s.id === sessionId);
     if (!session) return;
-    if (session.ptyId && window.electronAPI?.terminalKill) {
-      try {
-        window.electronAPI.terminalKill(session.ptyId);
-      } catch {
-        /* best-effort */
-      }
+    const managedSessionDestroyed = terminalSessionManager.destroy(sessionId);
+    // Fallback for sessions created before a renderer hot reload, when the
+    // Zustand state can outlive the module-scoped session manager.
+    if (!managedSessionDestroyed && session.ptyId && window.electronAPI?.terminalKill) {
+      window.electronAPI.terminalKill(session.ptyId);
     }
     const remaining = state.terminalSessions.filter((s) => s.id !== sessionId);
     let nextActive = state.activeTerminalSessionId;

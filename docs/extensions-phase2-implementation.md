@@ -1,5 +1,10 @@
 # Extensions: Phase 2 Implementation Details
 
+> Historical implementation note. It is not the current roadmap or
+> compatibility source of truth. Use
+> [extensions-roadmap.md](./extensions-roadmap.md) and
+> [extensions-compatibility.md](./extensions-compatibility.md).
+
 This document outlines the Phase 2 extension integration features implemented in Forge.
 
 ## Overview
@@ -18,13 +23,15 @@ Extensions can contribute language configurations, allowing Monaco to understand
 - **Clean up:** Disposables are tracked and cleaned up on extension reloads.
 
 ## 2. Icon Themes
-Icon themes are now parsed and supported.
+Icon themes are parsed and exposed in the selector, but renderer application is
+not complete yet.
 
 ### Implementation Details:
 - **Parsing:** `electron/extensions.ts` reads `contributes.iconThemes`. For each icon theme, the definitions JSON is parsed.
 - **Data Conversion:** The actual SVG/PNG icon files are read from the extension bundle and converted into Base64 Data URLs so they can be easily transmitted to the renderer process.
 - **Store & IPC:** The active icon theme is persisted in the main process via `forge-config.json`. The `ext:setActiveIconTheme` IPC handler enables the renderer to switch themes.
-- **UI:** The Extensions panel now lists installed Icon Themes and allows users to switch between them seamlessly.
+- **UI:** The Extensions panel lists installed Icon Themes and stores a renderer
+  selection. The Explorer does not consume the selected theme yet.
 
 ## 3. Agent & Formatter Integrations
 Extensions that require a full Extension Host (like `Claude Code for VS Code`, `Prettier`, or `ESLint`) are still lacking true host support. However, we've vastly improved their UX.

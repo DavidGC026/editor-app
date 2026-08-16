@@ -7,11 +7,14 @@ import EditorArea from './components/EditorArea';
 import BottomPanel, { TerminalsPanel } from './components/BottomPanel';
 import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
+import RemoteSSHModal from './components/RemoteSSHModal';
 import QuickOpen from './components/QuickOpen';
 import AIPanel from './components/AIPanel/AIPanel';
 import { Bot, Eraser, Maximize2, MessageSquare, Minimize2, RotateCcw, Terminal as TerminalIcon, X } from 'lucide-react';
 import type { ClaudeIdeEditorState } from './types';
 import { lspClient } from './lsp/client';
+import { contextKeys } from './extensions/contextKeys';
+import { extensionKeybindingService } from './extensions/registry';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Drag dividers
@@ -470,6 +473,32 @@ export default function App() {
     void refreshExtensions();
   }, [refreshExtensions]);
 
+  // Extension settings can change from the main process (workspace switch,
+  // another window's write): re-resolve the configuration on every push.
+  useEffect(() => {
+    const subscription = window.electronAPI?.ext?.onConfigurationChanged?.(() => {
+      void useStore.getState().refreshExtensionConfiguration();
+    });
+    return () => subscription?.dispose();
+  }, []);
+
+  // Publish the workbench context keys that extension when-clauses read
+  // (`workspaceOpen`, `editorLangId`, …). Mirrored from the store so a
+  // clause like "editorLangId == python" tracks the active tab live.
+  useEffect(() => {
+    const publish = (state: ReturnType<typeof useStore.getState>) => {
+      const activeTab = state.openTabs.find((tab) => tab.id === state.activeTabId);
+      contextKeys.set('workspaceOpen', Boolean(state.workspacePath));
+      contextKeys.set('editorIsOpen', Boolean(activeTab));
+      contextKeys.set('editorLangId', activeTab?.language);
+      contextKeys.set('sidebarVisible', state.sidebarVisible);
+      contextKeys.set('panelVisible', state.bottomPanelVisible);
+      contextKeys.set('gitOpenRepositoryCount', state.gitIsRepo ? 1 : 0);
+    };
+    publish(useStore.getState());
+    return useStore.subscribe(publish);
+  }, []);
+
   // Keep Claude Code's IDE bridge informed about the current workspace and
   // open text editors. The main process owns the WebSocket server; the
   // renderer owns editor state, so this is the mirror between them.
@@ -667,6 +696,13 @@ export default function App() {
       if (e.key === 'Escape' && quickOpenOpen) {
         setQuickOpenOpen(false);
       }
+
+      // Extension keybindings run after every native shortcut, so a VSIX
+      // can never shadow Forge's own keys. The event is consumed only when
+      // a command handler actually ran.
+      if (extensionKeybindingService.dispatch(e)) {
+        e.preventDefault();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -838,6 +874,7 @@ export default function App() {
       {/* Command Palette overlay */}
       {commandPaletteOpen && <CommandPalette />}
       {quickOpenOpen && <QuickOpen />}
+      <RemoteSSHModal />
     </div>
   );
 }

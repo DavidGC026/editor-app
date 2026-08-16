@@ -16,155 +16,59 @@
 import { app, dialog, net, BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { readZipEntries } from './zip';
+import type { ExtensionRegistry } from './extensions/application/ports/extension-registry';
+import type { ManifestReader } from './extensions/application/ports/manifest-reader';
+import type {
+  GrammarContributionReader,
+  IconThemeContributionReader,
+  LanguageContributionReader,
+  SnippetContributionReader,
+  ThemeContributionReader,
+} from './extensions/application/ports/contribution-readers';
+import type { ExtensionCompatibilityAnalyzer } from './extensions/application/ports/extension-compatibility-analyzer';
+import {
+  DeclarativeCompatibilityAnalyzer,
+  toLegacySupported,
+} from './extensions/application/declarative-compatibility-analyzer';
+import {
+  EXTENSION_IPC_PROTOCOL_VERSION,
+  type ExtensionListPayload,
+  type InstalledExtensionPayload,
+  type MarketplaceExtensionDetailPayload,
+  type MarketplaceExtensionPayload,
+  type MarketplaceSearchPayload,
+} from './extensions/domain/extension-dto';
+import type { InstalledExtensionRecord } from './extensions/domain/extension-manifest';
+import {
+  CheckExtensionUpdates,
+  type ExtensionUpdateInfo,
+} from './extensions/application/check-extension-updates';
+import {
+  ConfigurationService,
+  type ConfigurationInspection,
+  type WritableConfigurationScope,
+} from './extensions/application/configuration-service';
+import { ForgeWorkspaceSettingsStore } from './extensions/infrastructure/forge-workspace-settings-store';
+import { InstallExtensionById } from './extensions/application/install-extension-by-id';
+import { InstallExtensionFromVsix } from './extensions/application/install-extension-from-vsix';
+import { RollbackExtension } from './extensions/application/rollback-extension';
+import { OpenVsxCatalog } from './extensions/infrastructure/open-vsx-catalog';
+import { VsixPackageStore } from './extensions/infrastructure/vsix-package-store';
+import { FileGrammarContributionReader } from './extensions/infrastructure/grammar-contribution-reader';
+import { FileIconThemeContributionReader } from './extensions/infrastructure/icon-theme-contribution-reader';
+import { JsonExtensionRegistry } from './extensions/infrastructure/json-extension-registry';
+import { FileLanguageContributionReader } from './extensions/infrastructure/language-contribution-reader';
+import { FileSnippetContributionReader } from './extensions/infrastructure/snippet-contribution-reader';
+import { FileThemeContributionReader } from './extensions/infrastructure/theme-contribution-reader';
+import { VscodeManifestReader } from './extensions/infrastructure/vscode-manifest-reader';
 
-// ── Payload shapes shared with the renderer ────────────────────────────
-
-export interface ExtensionThemePayload {
-  /** Monaco-safe id, e.g. "dracula-soft". Unique across extensions. */
-  id: string;
-  /** Human label from the theme contribution ("Dracula Soft"). */
-  label: string;
-  /** "vs" | "vs-dark" | "hc-black" hint derived from uiTheme/type. */
-  uiTheme: string;
-  /** Raw VSCode theme JSON (comments stripped, includes merged). */
-  data: any;
-}
-
-export interface ExtensionSnippetsPayload {
-  /** VSCode language id the snippets apply to (e.g. "typescript"). */
-  language: string;
-  /** Parsed snippets file: { name: { prefix, body, description } }. */
-  snippets: Record<string, { prefix?: string | string[]; body?: string | string[]; description?: string }>;
-}
-
-export interface ExtensionIconThemePayload {
-  id: string;
-  label: string;
-  /** definitionId -> data URL (SVG inline or base64 PNG). */
-  definitions: Record<string, string>;
-  file: string | null;
-  folder: string | null;
-  folderExpanded: string | null;
-  rootFolder: string | null;
-  rootFolderExpanded: string | null;
-  fileExtensions: Record<string, string>;
-  fileNames: Record<string, string>;
-  folderNames: Record<string, string>;
-  folderNamesExpanded: Record<string, string>;
-  languageIds: Record<string, string>;
-}
-
-export interface ExtensionLanguageConfigPayload {
-  comments?: {
-    lineComment?: string;
-    blockComment?: [string, string];
-  };
-  brackets?: [string, string][];
-  autoClosingPairs?: ({ open: string; close: string; notIn?: string[] } | [string, string])[];
-  surroundingPairs?: ({ open: string; close: string } | [string, string])[];
-  folding?: {
-    markers?: { start?: string; end?: string };
-  };
-  wordPattern?: string;
-  indentationRules?: {
-    increaseIndentPattern?: string;
-    decreaseIndentPattern?: string;
-  };
-}
-
-export interface ExtensionLanguagePayload {
-  id: string;
-  aliases: string[];
-  extensions: string[];
-  filenames: string[];
-  firstLine: string | null;
-  configuration: ExtensionLanguageConfigPayload | null;
-}
-
-export interface InstalledExtensionPayload {
-  id: string;
-  displayName: string;
-  publisher: string;
-  version: string;
-  description: string;
-  categories: string[];
-  activationEvents: string[];
-  extensionKind: string[];
-  main: string | null;
-  browser: string | null;
-  contributes: string[];
-  supported: {
-    declarative: string[];
-    requiresExtensionHost: boolean;
-  };
-  themes: ExtensionThemePayload[];
-  snippets: ExtensionSnippetsPayload[];
-  iconThemes: ExtensionIconThemePayload[];
-  languages: ExtensionLanguagePayload[];
-}
-
-export interface MarketplaceExtensionPayload {
-  id: string;
-  name: string;
-  namespace: string;
-  displayName: string;
-  description: string;
-  version: string;
-  iconUrl: string | null;
-  downloadCount: number;
-  averageRating: number | null;
-  reviewCount: number;
-  verified: boolean;
-  deprecated: boolean;
-  lastUpdated: string | null;
-}
-
-export interface MarketplaceSearchPayload {
-  total: number;
-  extensions: MarketplaceExtensionPayload[];
-}
-
-export interface MarketplaceExtensionDetailPayload extends MarketplaceExtensionPayload {
-  readme: string | null;
-  categories: string[];
-  tags: string[];
-  license: string | null;
-  homepage: string | null;
-  repository: string | null;
-  bugs: string | null;
-  engines: Record<string, string>;
-  preRelease: boolean;
-  publishedBy: string | null;
-}
-
-interface RegistryEntry {
-  id: string;
-  displayName: string;
-  publisher: string;
-  version: string;
-  description: string;
-  categories: string[];
-  activationEvents: string[];
-  extensionKind: string[];
-  main: string | null;
-  browser: string | null;
-  contributes: string[];
-  /** Directory (under userData/extensions) the vsix was extracted into. */
-  dir: string;
-  themes: { label: string; uiTheme: string; path: string }[];
-  snippets: { language: string; path: string }[];
-  iconThemes: { id: string; label: string; path: string }[];
-  languages: {
-    id: string;
-    aliases: string[];
-    extensions: string[];
-    filenames: string[];
-    firstLine: string | null;
-    /** Relative path to language-configuration.json within the extension dir. */
-    configPath: string | null;
-  }[];
-}
+const manifestReader: ManifestReader = new VscodeManifestReader();
+const themeReader: ThemeContributionReader = new FileThemeContributionReader();
+const snippetReader: SnippetContributionReader = new FileSnippetContributionReader();
+const languageReader: LanguageContributionReader = new FileLanguageContributionReader();
+const iconThemeReader: IconThemeContributionReader = new FileIconThemeContributionReader();
+const grammarReader: GrammarContributionReader = new FileGrammarContributionReader();
+const compatibilityAnalyzer: ExtensionCompatibilityAnalyzer = new DeclarativeCompatibilityAnalyzer();
 
 // ── Config helpers (same forge-config.json as the rest of main.ts) ─────
 
@@ -172,7 +76,7 @@ function getConfigPath(): string {
   return path.join(app.getPath('userData'), 'forge-config.json');
 }
 
-function loadConfig(): Record<string, any> {
+function loadConfig(): Record<string, unknown> {
   try {
     const parsed = JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
     return parsed && typeof parsed === 'object' ? parsed : {};
@@ -181,271 +85,50 @@ function loadConfig(): Record<string, any> {
   }
 }
 
-function saveConfig(config: Record<string, any>): void {
+function saveConfig(config: Record<string, unknown>): void {
   try {
-    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
+    // Atomic replace: a crash mid-write must never leave a truncated
+    // forge-config.json behind (it holds the extension registry).
+    const configPath = getConfigPath();
+    const tmpPath = `${configPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, configPath);
   } catch (err) {
     console.warn('[forge:ext] failed to write config:', (err as Error).message);
   }
 }
 
-function loadRegistry(): Record<string, RegistryEntry> {
-  const cfg = loadConfig();
-  const reg = cfg.extensions;
-  return reg && typeof reg === 'object' ? reg : {};
-}
-
-function saveRegistry(registry: Record<string, RegistryEntry>): void {
-  const cfg = loadConfig();
-  cfg.extensions = registry;
-  saveConfig(cfg);
-}
+const extensionRegistry: ExtensionRegistry = new JsonExtensionRegistry({
+  readConfig: loadConfig,
+  writeConfig: saveConfig,
+});
 
 function getExtensionsRoot(): string {
   return path.join(app.getPath('userData'), 'extensions');
 }
 
-// ── JSONC parsing ───────────────────────────────────────────────────────
-// VSCode theme/snippet files are JSON-with-comments and often carry
-// trailing commas. Strip both before JSON.parse.
-
-function stripJsonComments(text: string): string {
-  let out = '';
-  let inString = false;
-  let inLine = false;
-  let inBlock = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    const next = text[i + 1];
-    if (inLine) {
-      if (ch === '\n') { inLine = false; out += ch; }
-      continue;
-    }
-    if (inBlock) {
-      if (ch === '*' && next === '/') { inBlock = false; i++; }
-      continue;
-    }
-    if (inString) {
-      out += ch;
-      if (ch === '\\') { out += next ?? ''; i++; }
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') { inString = true; out += ch; continue; }
-    if (ch === '/' && next === '/') { inLine = true; i++; continue; }
-    if (ch === '/' && next === '*') { inBlock = true; i++; continue; }
-    out += ch;
-  }
-  return out;
-}
-
-function parseJsonc(text: string): any {
-  const noComments = stripJsonComments(text);
-  // Remove trailing commas: `,` followed by whitespace and `}` or `]`.
-  const noTrailing = noComments.replace(/,(\s*[}\]])/g, '$1');
-  return JSON.parse(noTrailing);
-}
-
-// ── Theme reading (with `include` chain merging) ────────────────────────
-// VSCode themes can reference a parent file: { "include": "./dark_vs.json" }.
-// The child's colors/tokenColors override/extend the parent's.
-
-function readThemeJson(themePath: string, depth = 0): any {
-  if (depth > 5) return {};
-  const raw = parseJsonc(fs.readFileSync(themePath, 'utf-8'));
-  if (raw && typeof raw.include === 'string') {
-    const parentPath = path.resolve(path.dirname(themePath), raw.include);
-    try {
-      const parent = readThemeJson(parentPath, depth + 1);
-      return {
-        ...parent,
-        ...raw,
-        colors: { ...(parent.colors || {}), ...(raw.colors || {}) },
-        tokenColors: [
-          ...(Array.isArray(parent.tokenColors) ? parent.tokenColors : []),
-          ...(Array.isArray(raw.tokenColors) ? raw.tokenColors : []),
-        ],
-      };
-    } catch {
-      return raw;
-    }
-  }
-  return raw;
-}
-
-// ── ID helpers ──────────────────────────────────────────────────────────
-
-/** Monaco theme names must match /^[a-z0-9\-]+$/i. */
-function toMonacoThemeId(extId: string, label: string): string {
-  const slug = `${extId}-${label}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug || 'ext-theme';
-}
-
-/** Max icon file size (32 KB) — anything larger is skipped. */
-const ICON_MAX_BYTES = 32 * 1024;
-
-/** Read an icon file and return a data URL, or null if unreadable / too large. */
-function iconToDataUrl(iconAbsPath: string): string | null {
-  try {
-    const stat = fs.statSync(iconAbsPath);
-    if (stat.size > ICON_MAX_BYTES) return null;
-    const buf = fs.readFileSync(iconAbsPath);
-    const ext = path.extname(iconAbsPath).toLowerCase();
-    if (ext === '.svg') {
-      return `data:image/svg+xml;utf8,${encodeURIComponent(buf.toString('utf-8'))}`;
-    }
-    const mime = ext === '.png' ? 'image/png'
-      : ext === '.gif' ? 'image/gif'
-      : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
-      : ext === '.webp' ? 'image/webp'
-      : 'application/octet-stream';
-    return `data:${mime};base64,${buf.toString('base64')}`;
-  } catch {
-    return null;
-  }
-}
-
-function readIconThemePayload(entry: RegistryEntry, it: { id: string; label: string; path: string }): ExtensionIconThemePayload | null {
-  try {
-    const themeJsonPath = path.join(entry.dir, it.path);
-    const raw = parseJsonc(fs.readFileSync(themeJsonPath, 'utf-8'));
-    if (!raw || typeof raw !== 'object') return null;
-
-    const themeDir = path.dirname(themeJsonPath);
-    const definitions: Record<string, string> = {};
-    const rawDefs = raw.iconDefinitions;
-    if (rawDefs && typeof rawDefs === 'object') {
-      for (const [defId, def] of Object.entries(rawDefs)) {
-        const iconPath = (def as any)?.iconPath;
-        if (typeof iconPath !== 'string') continue;
-        const absIcon = path.resolve(themeDir, iconPath);
-        const dataUrl = iconToDataUrl(absIcon);
-        if (dataUrl) definitions[defId] = dataUrl;
-      }
-    }
-
-    const asStringRecord = (val: unknown): Record<string, string> => {
-      if (!val || typeof val !== 'object') return {};
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
-        if (typeof v === 'string') out[k] = v;
-      }
-      return out;
-    };
-
-    return {
-      id: it.id,
-      label: it.label,
-      definitions,
-      file: typeof raw.file === 'string' ? raw.file : null,
-      folder: typeof raw.folder === 'string' ? raw.folder : null,
-      folderExpanded: typeof raw.folderExpanded === 'string' ? raw.folderExpanded : null,
-      rootFolder: typeof raw.rootFolder === 'string' ? raw.rootFolder : null,
-      rootFolderExpanded: typeof raw.rootFolderExpanded === 'string' ? raw.rootFolderExpanded : null,
-      fileExtensions: asStringRecord(raw.fileExtensions),
-      fileNames: asStringRecord(raw.fileNames),
-      folderNames: asStringRecord(raw.folderNames),
-      folderNamesExpanded: asStringRecord(raw.folderNamesExpanded),
-      languageIds: asStringRecord(raw.languageIds),
-    };
-  } catch (err) {
-    console.warn(`[forge:ext] skipping icon theme "${it.label}":`, (err as Error).message);
-    return null;
-  }
-}
-
 // ── Install / list / uninstall ──────────────────────────────────────────
 
-function entryToPayload(entry: RegistryEntry): InstalledExtensionPayload {
-  const themes: ExtensionThemePayload[] = [];
-  for (const t of entry.themes) {
-    try {
-      themes.push({
-        id: toMonacoThemeId(entry.id, t.label),
-        label: t.label,
-        uiTheme: t.uiTheme,
-        data: readThemeJson(path.join(entry.dir, t.path)),
-      });
-    } catch (err) {
-      console.warn(`[forge:ext] skipping theme "${t.label}":`, (err as Error).message);
-    }
-  }
-
-  const snippets: ExtensionSnippetsPayload[] = [];
-  for (const s of entry.snippets) {
-    try {
-      const parsed = parseJsonc(fs.readFileSync(path.join(entry.dir, s.path), 'utf-8'));
-      if (parsed && typeof parsed === 'object') {
-        snippets.push({ language: s.language, snippets: parsed });
-      }
-    } catch (err) {
-      console.warn(`[forge:ext] skipping snippets for "${s.language}":`, (err as Error).message);
-    }
-  }
-
-  const entryIconThemes = entry.iconThemes || [];
-  const iconThemes: ExtensionIconThemePayload[] = [];
-  for (const it of entryIconThemes) {
-    const payload = readIconThemePayload(entry, it);
-    if (payload) iconThemes.push(payload);
-  }
-
-  const entryLanguages = entry.languages || [];
-  const languages: ExtensionLanguagePayload[] = [];
-  for (const lang of entryLanguages) {
-    let configuration: ExtensionLanguageConfigPayload | null = null;
-    if (lang.configPath) {
-      try {
-        const raw = parseJsonc(fs.readFileSync(path.join(entry.dir, lang.configPath), 'utf-8'));
-        if (raw && typeof raw === 'object') {
-          configuration = {};
-          if (raw.comments && typeof raw.comments === 'object') {
-            configuration.comments = {};
-            if (typeof raw.comments.lineComment === 'string') {
-              configuration.comments.lineComment = raw.comments.lineComment;
-            }
-            if (Array.isArray(raw.comments.blockComment) && raw.comments.blockComment.length === 2) {
-              configuration.comments.blockComment = [String(raw.comments.blockComment[0]), String(raw.comments.blockComment[1])];
-            }
-          }
-          if (Array.isArray(raw.brackets)) configuration.brackets = raw.brackets;
-          if (Array.isArray(raw.autoClosingPairs)) configuration.autoClosingPairs = raw.autoClosingPairs;
-          if (Array.isArray(raw.surroundingPairs)) configuration.surroundingPairs = raw.surroundingPairs;
-          if (raw.folding && typeof raw.folding === 'object') {
-            configuration.folding = {};
-            if (raw.folding.markers && typeof raw.folding.markers === 'object') {
-              configuration.folding.markers = {
-                ...(typeof raw.folding.markers.start === 'string' ? { start: raw.folding.markers.start } : {}),
-                ...(typeof raw.folding.markers.end === 'string' ? { end: raw.folding.markers.end } : {}),
-              };
-            }
-          }
-          if (typeof raw.wordPattern === 'string') configuration.wordPattern = raw.wordPattern;
-          if (raw.indentationRules && typeof raw.indentationRules === 'object') {
-            configuration.indentationRules = {
-              ...(typeof raw.indentationRules.increaseIndentPattern === 'string'
-                ? { increaseIndentPattern: raw.indentationRules.increaseIndentPattern } : {}),
-              ...(typeof raw.indentationRules.decreaseIndentPattern === 'string'
-                ? { decreaseIndentPattern: raw.indentationRules.decreaseIndentPattern } : {}),
-            };
-          }
-        }
-      } catch (err) {
-        console.warn(`[forge:ext] skipping language config for "${lang.id}":`, (err as Error).message);
-      }
-    }
-    languages.push({
-      id: lang.id,
-      aliases: lang.aliases,
-      extensions: lang.extensions,
-      filenames: lang.filenames,
-      firstLine: lang.firstLine,
-      configuration,
-    });
-  }
+function entryToPayload(entry: InstalledExtensionRecord): InstalledExtensionPayload {
+  const themes = themeReader.read(entry);
+  const snippets = snippetReader.read(entry);
+  const languages = languageReader.read(entry);
+  const iconThemes = iconThemeReader.read(entry);
+  const grammars = grammarReader.read(entry);
+  const compatibility = compatibilityAnalyzer.analyze(entry, {
+    themes: themes.length,
+    snippets: snippets.length,
+    languages: languages.length,
+    iconThemes: iconThemes.length,
+    // Settings are declared inline in the manifest, so what normalization
+    // kept is exactly what the ConfigurationService serves.
+    configuration: entry.configuration.length,
+    configurationDefaults: Object.keys(entry.configurationDefaults).length,
+    commands: entry.commands.length,
+    keybindings: entry.keybindings.length,
+    grammars: grammars.length,
+    menus: entry.menus.length,
+  });
 
   return {
     id: entry.id,
@@ -459,30 +142,33 @@ function entryToPayload(entry: RegistryEntry): InstalledExtensionPayload {
     main: entry.main || null,
     browser: entry.browser || null,
     contributes: entry.contributes || [],
-    supported: {
-      declarative: [
-        ...(entry.themes.length > 0 ? ['themes'] : []),
-        ...(entry.snippets.length > 0 ? ['snippets'] : []),
-        ...(entryLanguages.length > 0 ? ['languages'] : []),
-      ],
-      requiresExtensionHost: Boolean(entry.main || entry.browser || (entry.activationEvents || []).length > 0),
-    },
+    supported: toLegacySupported(compatibility),
+    compatibility,
+    enabled: entry.enabled,
+    previousVersion: entry.previousVersion?.version ?? null,
     themes,
     iconThemes,
     snippets,
     languages,
+    configuration: entry.configuration.map((setting) => ({
+      key: setting.key,
+      type: setting.type,
+      default: setting.default,
+      description: setting.description,
+      enum: setting.enum,
+    })),
+    commands: entry.commands,
+    keybindings: entry.keybindings,
+    grammars,
+    menus: entry.menus,
   };
 }
 
-export function listExtensions(): {
-  extensions: InstalledExtensionPayload[];
-  activeTheme: string | null;
-  activeIconTheme: string | null;
-} {
-  const registry = loadRegistry();
+export function listExtensions(): ExtensionListPayload {
   const cfg = loadConfig();
   return {
-    extensions: Object.values(registry).map(entryToPayload),
+    protocolVersion: EXTENSION_IPC_PROTOCOL_VERSION,
+    extensions: extensionRegistry.list().map(entryToPayload),
     activeTheme: typeof cfg.activeTheme === 'string' ? cfg.activeTheme : null,
     activeIconTheme: typeof cfg.activeIconTheme === 'string' ? cfg.activeIconTheme : null,
   };
@@ -515,129 +201,119 @@ export async function installVsix(
   return installVsixFromPath(result.filePaths[0]);
 }
 
+const packageStore = new VsixPackageStore({
+  rootDir: getExtensionsRoot,
+  manifestReader,
+});
+
+const installFromVsix = new InstallExtensionFromVsix({
+  packageStore,
+  registry: extensionRegistry,
+});
+
+const catalog = new OpenVsxCatalog({
+  tempDir: () => app.getPath('temp'),
+  fetchImpl: net.fetch,
+});
+
+const installById = new InstallExtensionById({
+  catalog,
+  installer: installFromVsix,
+  registry: extensionRegistry,
+  deleteTempFile: (filePath) => fs.rmSync(filePath, { force: true }),
+});
+
+const updateChecker = new CheckExtensionUpdates({
+  catalog,
+  registry: extensionRegistry,
+});
+
+// Main owns which workspace is open; the facade only needs a provider that
+// yields the local workspace dir (or null for none/remote).
+let workspaceDirProvider: () => string | null = () => null;
+
+/** Wires the active-workspace provider; called once from main. */
+export function configureExtensionWorkspace(provider: () => string | null): void {
+  workspaceDirProvider = provider;
+}
+
+// User-scope setting values live under their own forge-config.json key so
+// they survive uninstall/reinstall of the extension that declares them.
+const configurationService = new ConfigurationService({
+  records: () => extensionRegistry.list(),
+  workspaceStore: () => {
+    const dir = workspaceDirProvider();
+    return dir ? new ForgeWorkspaceSettingsStore({ workspaceDir: dir }) : null;
+  },
+  userStore: {
+    read: () => {
+      const raw = loadConfig().extensionSettings;
+      return raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+    },
+    write: (values) => {
+      const cfg = loadConfig();
+      cfg.extensionSettings = values;
+      saveConfig(cfg);
+    },
+  },
+});
+
+const rollback = new RollbackExtension({
+  packageStore,
+  registry: extensionRegistry,
+  manifestReader,
+  readManifestSource: (dir) => fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'),
+});
+
 export function installVsixFromPath(vsixPath: string): InstalledExtensionPayload {
-  const zipEntries = readZipEntries(vsixPath);
+  return entryToPayload(installFromVsix.install(vsixPath));
+}
 
-  const manifestEntry = zipEntries.find((e) => e.name === 'extension/package.json');
-  if (!manifestEntry) {
-    throw new Error('El archivo no parece un VSIX válido (falta extension/package.json).');
-  }
-  const manifest = parseJsonc(manifestEntry.getData().toString('utf-8'));
-  const name: string = manifest.name || 'unknown';
-  const publisher: string = manifest.publisher || 'unknown';
-  const id = `${publisher}.${name}`.toLowerCase();
+/** Re-points an installed extension at its retained previous version. */
+export function rollbackExtension(id: string): InstalledExtensionPayload {
+  return entryToPayload(rollback.rollback(id));
+}
 
-  const destDir = path.join(getExtensionsRoot(), id);
+/** Installed extensions with a newer version published in the catalog. */
+export function checkExtensionUpdates(): Promise<ExtensionUpdateInfo[]> {
+  return updateChecker.check();
+}
 
-  // Fresh install: clear any previous version of the same extension.
-  fs.rmSync(destDir, { recursive: true, force: true });
-  fs.mkdirSync(destDir, { recursive: true });
+/** Every setting contributed by installed extensions, fully resolved. */
+export function listConfiguration(): ConfigurationInspection[] {
+  return configurationService.inspectAll();
+}
 
-  // Extract only the `extension/` subtree, guarding against zip-slip.
-  for (const entry of zipEntries) {
-    if (entry.isDirectory) continue;
-    if (!entry.name.startsWith('extension/')) continue;
-    const rel = entry.name.slice('extension/'.length);
-    const target = path.resolve(destDir, rel);
-    if (target !== destDir && !target.startsWith(destDir + path.sep)) continue;
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, entry.getData());
-  }
+/** Writes (`undefined` clears) a setting value in the given scope. */
+export function setConfigurationValue(
+  key: string,
+  value: unknown,
+  scope: WritableConfigurationScope = 'user',
+): void {
+  configurationService.setValue(key, value, scope);
+}
 
-  const contributes = manifest.contributes || {};
+/** Notifies after every configuration write. Returns the unsubscribe. */
+export function onExtensionConfigurationChanged(
+  listener: (key: string) => void,
+): () => void {
+  return configurationService.onDidChange(listener);
+}
 
-  const themes: RegistryEntry['themes'] = [];
-  if (Array.isArray(contributes.themes)) {
-    for (const t of contributes.themes) {
-      if (!t || typeof t.path !== 'string') continue;
-      themes.push({
-        label: typeof t.label === 'string' ? t.label : name,
-        uiTheme: typeof t.uiTheme === 'string' ? t.uiTheme : 'vs-dark',
-        path: t.path.replace(/^\.\//, ''),
-      });
+/**
+ * Startup inventory: removes abandoned staging and orphan directories a
+ * post-commit failure could have left in the store.
+ */
+export function sweepExtensionStore(): void {
+  try {
+    for (const removed of packageStore.sweep(extensionRegistry.list())) {
+      console.warn('[forge:ext] swept orphan store entry:', removed);
     }
+  } catch (err) {
+    console.warn('[forge:ext] store sweep failed:', (err as Error).message);
   }
-
-  const snippets: RegistryEntry['snippets'] = [];
-  if (Array.isArray(contributes.snippets)) {
-    for (const s of contributes.snippets) {
-      if (!s || typeof s.path !== 'string' || typeof s.language !== 'string') continue;
-      snippets.push({ language: s.language, path: s.path.replace(/^\.\//,  '') });
-    }
-  }
-
-  const languages: RegistryEntry['languages'] = [];
-  if (Array.isArray(contributes.languages)) {
-    for (const lang of contributes.languages) {
-      if (!lang || typeof lang.id !== 'string') continue;
-      const aliases = Array.isArray(lang.aliases)
-        ? lang.aliases.filter((a: unknown): a is string => typeof a === 'string')
-        : [];
-      const exts = Array.isArray(lang.extensions)
-        ? lang.extensions.filter((e: unknown): e is string => typeof e === 'string')
-        : [];
-      const filenames = Array.isArray(lang.filenames)
-        ? lang.filenames.filter((f: unknown): f is string => typeof f === 'string')
-        : [];
-      const firstLine = typeof lang.firstLine === 'string' ? lang.firstLine : null;
-      const configPath = typeof lang.configuration === 'string'
-        ? lang.configuration.replace(/^\.\//,  '')
-        : null;
-      languages.push({ id: lang.id, aliases, extensions: exts, filenames, firstLine, configPath });
-    }
-  }
-
-  const iconThemes: RegistryEntry['iconThemes'] = [];
-  if (Array.isArray(contributes.iconThemes)) {
-    for (const t of contributes.iconThemes) {
-      if (!t || typeof t.path !== 'string') continue;
-      iconThemes.push({
-        id: typeof t.id === 'string' ? t.id : name,
-        label: typeof t.label === 'string' ? t.label : name,
-        path: t.path.replace(/^\.\//, ''),
-      });
-    }
-  }
-
-  const contributesKeys = contributes && typeof contributes === 'object'
-    ? Object.keys(contributes).sort()
-    : [];
-  const categories = Array.isArray(manifest.categories)
-    ? manifest.categories.filter((c: unknown): c is string => typeof c === 'string')
-    : [];
-  const activationEvents = Array.isArray(manifest.activationEvents)
-    ? manifest.activationEvents.filter((e: unknown): e is string => typeof e === 'string')
-    : [];
-  const extensionKind = Array.isArray(manifest.extensionKind)
-    ? manifest.extensionKind.filter((k: unknown): k is string => typeof k === 'string')
-    : typeof manifest.extensionKind === 'string'
-      ? [manifest.extensionKind]
-      : [];
-
-  const entry: RegistryEntry = {
-    id,
-    displayName: typeof manifest.displayName === 'string' ? manifest.displayName : name,
-    publisher,
-    version: typeof manifest.version === 'string' ? manifest.version : '0.0.0',
-    description: typeof manifest.description === 'string' ? manifest.description : '',
-    categories,
-    activationEvents,
-    extensionKind,
-    main: typeof manifest.main === 'string' ? manifest.main : null,
-    browser: typeof manifest.browser === 'string' ? manifest.browser : null,
-    contributes: contributesKeys,
-    dir: destDir,
-    themes,
-    snippets,
-    iconThemes,
-    languages,
-  };
-
-  const registry = loadRegistry();
-  registry[id] = entry;
-  saveRegistry(registry);
-
-  return entryToPayload(entry);
 }
 
 // ── Open VSX (`ext install publisher.name`) ─────────────────────────────
@@ -645,43 +321,7 @@ export function installVsixFromPath(vsixPath: string): InstalledExtensionPayload
 // VSCode forks — the Microsoft marketplace is licensed for MS products only.
 
 export async function installFromOpenVsx(extensionId: string): Promise<InstalledExtensionPayload> {
-  const match = extensionId.trim().match(/^([A-Za-z0-9][\w.-]*)\.([A-Za-z0-9][\w-]*)$/);
-  if (!match) {
-    throw new Error(
-      `Identificador inválido: "${extensionId}". Usa el formato publisher.nombre ` +
-        '(ej. dracula-theme.theme-dracula).',
-    );
-  }
-  const [, namespace, name] = match;
-
-  const metaRes = await net.fetch(
-    `https://open-vsx.org/api/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/latest`,
-  );
-  if (metaRes.status === 404) {
-    throw new Error(`No se encontró "${namespace}.${name}" en Open VSX (open-vsx.org).`);
-  }
-  if (!metaRes.ok) {
-    throw new Error(`Open VSX respondió ${metaRes.status} al buscar "${namespace}.${name}".`);
-  }
-  const meta: any = await metaRes.json();
-  const downloadUrl: string | undefined = meta?.files?.download;
-  if (!downloadUrl) {
-    throw new Error(`"${namespace}.${name}" no tiene un paquete descargable en Open VSX.`);
-  }
-
-  const dlRes = await net.fetch(downloadUrl);
-  if (!dlRes.ok) {
-    throw new Error(`La descarga del VSIX falló (HTTP ${dlRes.status}).`);
-  }
-  const buf = Buffer.from(await dlRes.arrayBuffer());
-
-  const tmpPath = path.join(app.getPath('temp'), `forge-vsix-${Date.now()}.vsix`);
-  fs.writeFileSync(tmpPath, buf);
-  try {
-    return installVsixFromPath(tmpPath);
-  } finally {
-    fs.rmSync(tmpPath, { force: true });
-  }
+  return entryToPayload(await installById.install(extensionId));
 }
 
 function asNumber(value: unknown, fallback = 0): number {
@@ -831,21 +471,31 @@ export async function getOpenVsxDetail(
   };
 }
 
+/** Toggles an installed extension without uninstalling it. */
+export function setExtensionEnabled(id: string, enabled: boolean): boolean {
+  const entry = extensionRegistry.get(id);
+  if (!entry || entry.enabled === enabled) return Boolean(entry);
+  extensionRegistry.upsert({ ...entry, enabled });
+  return true;
+}
+
 export function uninstallExtension(id: string): boolean {
-  const registry = loadRegistry();
-  const entry = registry[id];
+  const entry = extensionRegistry.get(id);
   if (!entry) return false;
   try {
     // Only delete directories we created under our own extensions root.
+    // Installs are versioned (`<root>/<id>/<version>`), so remove the whole
+    // per-extension directory; legacy flat installs (`<root>/<id>`) resolve
+    // to the same top-level segment.
     const root = getExtensionsRoot();
     const resolved = path.resolve(entry.dir);
     if (resolved.startsWith(root + path.sep)) {
-      fs.rmSync(resolved, { recursive: true, force: true });
+      const topLevel = path.relative(root, resolved).split(path.sep)[0];
+      fs.rmSync(path.join(root, topLevel), { recursive: true, force: true });
     }
   } catch (err) {
     console.warn('[forge:ext] failed to remove extension dir:', (err as Error).message);
   }
-  delete registry[id];
-  saveRegistry(registry);
+  extensionRegistry.remove(id);
   return true;
 }

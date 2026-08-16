@@ -1,4 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type {
+  ExtensionConfigurationValuePayload,
+  ExtensionListPayload,
+  ExtensionUpdatePayload,
+  InstalledExtensionPayload,
+  MarketplaceExtensionDetailPayload,
+  MarketplaceSearchPayload,
+} from './extensions/domain/extension-dto';
 
 export interface FsChangeEvent {
   reason: 'add' | 'unlink' | 'addDir' | 'unlinkDir' | 'change' | string;
@@ -36,6 +44,11 @@ export interface ElectronAPI {
   // Remote SSH workspace
   remote: {
     connect: (args: { target: string; path: string }) => Promise<string>;
+    browse: (args: { target: string; path: string }) => Promise<{
+      path: string;
+      parent: string | null;
+      directories: { name: string; path: string }[];
+    }>;
   };
   // File System
   readDirectory: (dirPath: string) => Promise<any[]>;
@@ -182,12 +195,26 @@ export interface ElectronAPI {
   };
   // Extensions (VSIX / Open VSX)
   ext: {
-    installVsix: () => Promise<any | null>;
-    installFromOpenVsx: (extensionId: string) => Promise<any>;
-    searchOpenVsx: (query: string, size?: number) => Promise<any>;
-    detail: (extensionId: string) => Promise<any>;
-    list: () => Promise<{ extensions: any[]; activeTheme: string | null }>;
+    installVsix: () => Promise<InstalledExtensionPayload | null>;
+    installFromOpenVsx: (extensionId: string) => Promise<InstalledExtensionPayload>;
+    searchOpenVsx: (query: string, size?: number) => Promise<MarketplaceSearchPayload>;
+    detail: (extensionId: string) => Promise<MarketplaceExtensionDetailPayload>;
+    list: () => Promise<ExtensionListPayload>;
     uninstall: (id: string) => Promise<boolean>;
+    setEnabled: (id: string, enabled: boolean) => Promise<boolean>;
+    checkUpdates: () => Promise<ExtensionUpdatePayload[]>;
+    rollback: (id: string) => Promise<InstalledExtensionPayload>;
+    listConfiguration: () => Promise<ExtensionConfigurationValuePayload[]>;
+    /** `undefined` clears the value in the given scope (default: user). */
+    setConfigurationValue: (
+      key: string,
+      value: unknown,
+      scope?: 'user' | 'workspace',
+    ) => Promise<boolean>;
+    /** Fires after every configuration write ('*' = workspace switched). */
+    onConfigurationChanged: (
+      callback: (key: string) => void,
+    ) => { dispose: () => void };
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
   };
@@ -260,6 +287,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   remote: {
     connect: (args: { target: string; path: string }) =>
       ipcRenderer.invoke('remote:connect', args),
+    browse: (args: { target: string; path: string }) =>
+      ipcRenderer.invoke('remote:browse', args),
   },
   // File System
   readDirectory: (dirPath: string) => ipcRenderer.invoke('fs:readDirectory', dirPath),
@@ -512,6 +541,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
     detail: (extensionId: string) => ipcRenderer.invoke('ext:detail', extensionId),
     list: () => ipcRenderer.invoke('ext:list'),
     uninstall: (id: string) => ipcRenderer.invoke('ext:uninstall', id),
+    setEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('ext:setEnabled', id, enabled),
+    checkUpdates: () => ipcRenderer.invoke('ext:checkUpdates'),
+    rollback: (id: string) => ipcRenderer.invoke('ext:rollback', id),
+    listConfiguration: () => ipcRenderer.invoke('ext:config:list'),
+    setConfigurationValue: (key: string, value: unknown, scope?: 'user' | 'workspace') =>
+      ipcRenderer.invoke('ext:config:set', key, value, scope),
+    onConfigurationChanged: (callback: (key: string) => void) => {
+      const handler = (_event: unknown, payload: { key?: string }) => {
+        try {
+          callback(typeof payload?.key === 'string' ? payload.key : '*');
+        } catch (err) {
+          console.error('[forge] onConfigurationChanged callback error:', err);
+        }
+      };
+      ipcRenderer.on('ext:config:changed', handler);
+      return {
+        dispose: () => ipcRenderer.removeListener('ext:config:changed', handler),
+      };
+    },
     setActiveTheme: (themeId: string | null) =>
       ipcRenderer.invoke('ext:setActiveTheme', themeId),
     setActiveIconTheme: (iconThemeId: string | null) =>

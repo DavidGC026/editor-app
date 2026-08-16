@@ -1,0 +1,12 @@
+{
+  "name": "fixture-runtime",
+  "publisher": "forge-tests",
+  "version": "0.1.0",
+  "main": "./out/extension.js",
+  "browser": "./dist/web.js",
+  "activationEvents": ["onCommand:fixture.run"],
+  "extensionKind": "workspace",
+  "contributes": {
+    "commands": [{ "command": "fixture.run", "title": "Run Fixture" }]
+  }
+}

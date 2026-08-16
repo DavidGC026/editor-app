@@ -1,51 +1,135 @@
-# Extension Compatibility
+# Contrato y matriz de compatibilidad de extensiones
 
-Forge now accepts general VSIX/Open VSX extensions, but full VS Code extension compatibility requires an extension host.
+Esta matriz es la fuente de verdad del estado funcional. “Instalada” no
+significa “compatible”. Un capability sólo avanza de nivel cuando cumple la
+Definition of Done de la arquitectura.
 
-## Supported Now
+## Niveles
 
-### Themes
+| Nivel | Significado |
+| --- | --- |
+| `unsupported` | Forge reconoce la necesidad, pero no ofrece implementación |
+| `metadata` | El manifiesto se conserva y se muestra; no se activa |
+| `declarative` | La contribución se interpreta sin ejecutar código |
+| `partial` | Existe una parte útil de la API, con limitaciones conocidas |
+| `compatible` | Casos representativos y suite contractual pasan |
+| `degraded` | Normalmente compatible, pero limitada por host/workspace/plataforma |
+| `blocked` | Política, seguridad, engine, API proposed o dependencia impiden activar |
 
-VS Code color themes from `contributes.themes` are parsed, converted to Monaco theme IDs, and exposed in the Color Theme list.
+La UI debe mostrar nivel, razones y evidencia; nunca reducirlo a un badge
+genérico “Active”.
 
-Theme JSON supports JSONC-style comments and trailing commas. Basic `include` chains are merged.
+## Estado real al 2026-07-15
 
-### Snippets
+| Área | Estado | Observaciones |
+| --- | --- | --- |
+| Open VSX search/detail | `partial` | Búsqueda, detalle y README; sin paginación rica, versions ni updates |
+| Instalación Open VSX | `partial` | Funciona, pero aún no es transaccional ni conserva hash/provenance |
+| VSIX local | `partial` | Valida estructura y zip-slip básico; falta trust e integridad completa |
+| Uninstall | `partial` | Elimina paquete/registry; falta lifecycle/rollback/dependencies |
+| Registry local | `partial` | Puerto/adaptador tipado y migración legacy; escritura atómica pendiente |
+| IPC de tienda | `partial` | Preload tipado y handshake list v1; envelopes/validación runtime pendientes |
+| Color themes | `partial` | Conversión aproximada TextMate → tokens Monaco |
+| Snippets | `partial` | Completion provider; faltan algunos detalles/precedencia de VS Code |
+| Languages | `partial` | Registro y configuración básica; regex y campos no cubiertos totalmente |
+| Icon themes | `metadata` | Se parsean y seleccionan en UI, pero no se aplican al explorer |
+| Recursos declarativos | `partial` | Readers aislados y path traversal bloqueado; falta package validation completa |
+| Analyzer | `partial` | Estado activo basado en carga real; reporte rico de blockers pendiente |
+| Grammars | `unsupported` | No hay TextMate registry |
+| Configuration | `unsupported` | No hay scopes/schema/settings UI de extensiones |
+| Commands/keybindings/menus | `unsupported` | No existe contribution/context-key pipeline |
+| Extension `main` | `metadata` | No se ejecuta código Node |
+| Extension `browser` | `metadata` | No existe Web Extension Host |
+| Activation events | `metadata` | Se muestran, no se despachan |
+| VS Code API | `unsupported` | No existe módulo `vscode` compatible |
+| LSP/DAP/tasks/testing | `unsupported` | Forge tiene piezas nativas, aún sin bridge de extensiones |
+| Views/webviews/notebooks | `unsupported` | Sin workbench contribution hosts |
+| Remote extension host | `unsupported` | Remote SSH no ejecuta extensiones junto al workspace |
+| Workspace Trust | `unsupported` | Bloqueador para ejecutar código de terceros |
 
-VS Code snippets from `contributes.snippets` are loaded per language and registered with Monaco completion support.
+## Matriz objetivo por contribution point
 
-## Installed But Not Executed Yet
+La lista oficial evoluciona; el analyzer conservará claves desconocidas y las
+reportará. Prioridad inicial:
 
-Extensions with these fields are installed and shown, but their code is not executed:
+| Grupo | Contribution points | Fase |
+| --- | --- | --- |
+| Apariencia/lenguaje básico | themes, snippets, languages, grammars, iconThemes, productIconThemes, colors, icons | M2 |
+| Configuración/contexto | configuration, configurationDefaults, commands, keybindings, menus | M2 |
+| Validación/build | jsonValidation, problemPatterns, problemMatchers, breakpoints | M2/M7 |
+| Workbench | views, viewsContainers, viewsWelcome, walkthroughs | M6 |
+| Lenguaje runtime | semanticTokenScopes y providers vía API | M5 |
+| Debug/tasks/tests | debuggers, taskDefinitions y APIs runtime | M7 |
+| UI avanzada | customEditors, notebooks, notebookRenderer | M8 |
+| Auth/SCM | authentication y APIs runtime | M6 |
+| Chat/LM | chatAgents, languageModelTools/providers y relacionados | Posterior a M8; diseño separado |
 
-- `main`
-- `browser`
-- `activationEvents`
+Referencia completa: [Contribution Points](https://code.visualstudio.com/api/references/contribution-points).
 
-Common examples:
+## Matriz objetivo por namespace API
 
-- Language extensions that wrap a language server.
-- Debug adapters.
-- Formatters.
-- Linters.
-- Tree views.
-- Commands implemented in extension code.
-- Webview-based extensions.
+| Orden | API | Alcance inicial |
+| --- | --- | --- |
+| 1 | Primitivas | Disposable, EventEmitter, Uri, Position, Range, Selection, Cancellation |
+| 2 | commands | register/execute/getCommands y activación on-demand |
+| 3 | workspace | folders, documents, fs, configuration, edits, watchers, trust |
+| 4 | window | editors, messages, output, progress, status, quick input |
+| 5 | languages | diagnostics y providers de lenguaje |
+| 6 | env/extensions | identidad, host, clipboard, URIs, extension inventory |
+| 7 | tasks/debug/tests | workflows de ejecución y DAP |
+| 8 | scm/authentication | providers con consentimiento y storage seguro |
+| 9 | notebooks/webviews | superficies aisladas y mensajería |
 
-## UI Behavior
+La referencia contractual se derivará de `vscode.d.ts` para la versión de API
+objetivo publicada por Forge. No se copiará de memoria:
+[VS Code API](https://code.visualstudio.com/api/references/vscode-api).
 
-Forge no longer rejects an extension because it lacks themes or snippets. Instead, it installs the package and shows whether it is usable immediately or requires future extension-host work.
+## Compatibility report por extensión
 
-This prevents false negatives for valid VS Code extensions while keeping runtime behavior explicit.
+El analyzer producirá como mínimo:
 
-## Agent Extensions
+```ts
+interface CompatibilityReport {
+  extensionId: string;
+  extensionVersion: string;
+  targetApiVersion: string;
+  engineSatisfied: boolean;
+  selectedHost: 'node-local' | 'node-remote' | 'web' | null;
+  level: 'metadata' | 'declarative' | 'partial' | 'compatible' | 'degraded' | 'blocked';
+  supportedContributions: string[];
+  unsupportedContributions: string[];
+  observedApiCalls: string[];
+  unsupportedApiCalls: string[];
+  activationEvents: string[];
+  blockers: { code: string; message: string }[];
+  lastVerifiedAt: string | null;
+}
+```
 
-Known AI-agent-related marketplace entries can map to Forge terminal agents:
+El análisis estático del manifiesto es una predicción. La evidencia runtime y las
+pruebas contractuales son las que permiten elevar una extensión a `compatible`.
 
-- OpenAI ChatGPT extension -> `codex`
-- Anthropic Claude Code extension -> `claude`
-- Cursor Agent-related entries -> `cursor-agent`
-- Antigravity-related entries -> `agy`
+## Corpus de compatibilidad
 
-These are terminal-agent integrations, not VS Code extension host execution.
+Se mantendrán dos grupos:
 
+### Fixtures controlados
+
+Extensiones mínimas dentro del repositorio, una por capability y caso de error.
+Son deterministas y forman la suite obligatoria de CI.
+
+### Extensiones públicas representativas
+
+Un corpus fijado por ID y versión desde Open VSX para themes, grammars,
+formatters, linters, language servers, tree views, tasks, debuggers, webviews y
+web extensions. No se actualizará automáticamente en CI sin revisar cambios.
+
+## Reglas para comunicar compatibilidad
+
+- No mostrar “compatible” por reconocer `main` o `contributes`.
+- No sustituir una extensión por un CLI y presentarla como la misma extensión.
+- Las integraciones especiales de agentes se etiquetan como integración Forge,
+  no como ejecución de la extensión VS Code.
+- Toda limitación por remoto, virtual workspace, trust, SO o arquitectura debe
+  aparecer antes de activar.
+- APIs unknown/proposed se muestran por nombre cuando sea seguro hacerlo.

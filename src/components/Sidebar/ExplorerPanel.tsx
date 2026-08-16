@@ -3,6 +3,10 @@ import { useStore } from '../../store';
 import { lspClient } from '../../lsp/client';
 import { isHtmlFile, type GitChange, type Tab, type TreeNode } from '../../types';
 import { gitStatusLabel } from '../../utils/gitHelpers';
+import { fileIconUrl, findIconTheme, folderIconUrl } from '../../extensions/iconTheme';
+import { buildMenuItems, explorerResourceContext, filterMenuItems, type ResolvedMenuItem } from '../../extensions/menus';
+import { contextKeys } from '../../extensions/contextKeys';
+import { extensionCommandService } from '../../extensions/registry';
 import { Loader2, GitCommit, ChevronRight, ChevronDown, File, Folder, FolderOpen, Plus, Search, GitBranch, Bug, Blocks, ListTree, History, Globe, RefreshCw, Pencil, Trash2, XCircle } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -94,6 +98,8 @@ interface CtxMenuState {
 
 function ContextMenu({
   state,
+  extensionItems,
+  onRunExtensionItem,
   onClose,
   onRename,
   onDelete,
@@ -107,6 +113,9 @@ function ContextMenu({
   liveServerHtmlPath,
 }: {
   state: CtxMenuState;
+  /** `explorer/context` items from extensions, already when-filtered. */
+  extensionItems: ResolvedMenuItem[];
+  onRunExtensionItem: (item: ResolvedMenuItem) => void;
   onClose: () => void;
   onRename: () => void;
   onDelete: () => void;
@@ -188,6 +197,21 @@ function ContextMenu({
       <div className="context-menu-divider" />
       <div className="context-menu-item" onClick={() => { onRename(); onClose(); }}>Rename</div>
       <div className="context-menu-item" onClick={() => { onDelete(); onClose(); }}>Delete</div>
+      {extensionItems.length > 0 && (
+        <>
+          <div className="context-menu-divider" />
+          {extensionItems.map((item) => (
+            <div
+              key={`${item.ownerId}:${item.command}`}
+              className="context-menu-item"
+              title={item.command}
+              onClick={() => { onRunExtensionItem(item); onClose(); }}
+            >
+              {item.title}
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -232,8 +256,21 @@ function TreeItem({
   const createNewDirectory = useStore((s) => s.createNewDirectory);
   const renameItem = useStore((s) => s.renameItem);
 
+  const installedExtensions = useStore((s) => s.installedExtensions);
+  const activeIconTheme = useStore((s) => s.activeIconTheme);
+
   const isExpanded = expandedFolders.has(node.id);
   const isDirectory = node.type === 'directory';
+
+  // Active extension icon theme, when one is selected. `null` falls back to
+  // the built-in lucide icons below.
+  const themedIconUrl = useMemo(() => {
+    const theme = findIconTheme(installedExtensions, activeIconTheme);
+    if (!theme) return null;
+    return isDirectory
+      ? folderIconUrl(theme, node.name, isExpanded)
+      : fileIconUrl(theme, node.name);
+  }, [installedExtensions, activeIconTheme, isDirectory, node.name, isExpanded]);
   const isActiveFile = activeTabId === node.path;
   const isActiveFolder = isDirectory && activeFolderPaths.has(node.path);
   const isSelected = selectedPath === node.path;
@@ -294,7 +331,14 @@ function TreeItem({
           )}
 
           <span className="mr-1.5 flex-shrink-0 inline-flex items-center">
-            {isDirectory ? (
+            {themedIconUrl ? (
+              <img
+                src={themedIconUrl}
+                alt=""
+                className="w-[15px] h-[15px] object-contain"
+                draggable={false}
+              />
+            ) : isDirectory ? (
               isExpanded ? (
                 <FolderOpen size={15} style={{ color: textColor }} />
               ) : (
@@ -691,6 +735,14 @@ export default function ExplorerPanel() {
   const liveServerHtmlFile = useStore((s) => s.liveServerHtmlFile);
   const startLiveServer = useStore((s) => s.startLiveServer);
   const stopLiveServer = useStore((s) => s.stopLiveServer);
+  const installedExtensions = useStore((s) => s.installedExtensions);
+
+  // `contributes.menus` entries for the explorer, derived on demand from
+  // the installed payloads — nothing to retire when an extension leaves.
+  const explorerMenuItems = useMemo(
+    () => buildMenuItems(installedExtensions, 'explorer/context'),
+    [installedExtensions],
+  );
 
   // Compute the full absolute path of the HTML file currently being served,
   // joining root + basename with the OS-appropriate separator. We don't have
@@ -916,6 +968,15 @@ export default function ExplorerPanel() {
       {ctxMenu && (
         <ContextMenu
           state={ctxMenu}
+          extensionItems={filterMenuItems(explorerMenuItems, (when) =>
+            contextKeys.match(when, explorerResourceContext(ctxMenu.node)),
+          )}
+          onRunExtensionItem={(item) => {
+            // Handlers arrive with the Extension Host; without one this is
+            // a well-reported no-op. The resource path travels as the
+            // argument, matching VS Code's contract for explorer commands.
+            extensionCommandService.execute(item.command, ctxMenu.node.path);
+          }}
           onClose={() => setCtxMenu(null)}
           onRename={handleCtxRename}
           onDelete={handleCtxDelete}

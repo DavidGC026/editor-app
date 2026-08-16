@@ -1,0 +1,8 @@
+{
+  "Print value": {
+    "prefix": ["print", "fixture-print"],
+    "body": ["console.log(${1:value});", "$0"],
+    "description": "Print a fixture value"
+  },
+  "Ignored primitive": "invalid"
+}

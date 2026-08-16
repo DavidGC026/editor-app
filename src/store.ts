@@ -13,7 +13,6 @@ import {
   PendingDiff,
   ProviderId,
   InstalledExtension,
-  MarketplaceSearchResult,
   MarketplaceExtension,
   GitChange,
   GitBranchEntry,
@@ -26,7 +25,8 @@ import { lspClient } from './lsp/client';
 import { LayoutSlice, createLayoutSlice } from './store/slices/layoutSlice';
 import { TerminalSlice, createTerminalSlice } from './store/slices/terminalSlice';
 import { GitSlice, createGitSlice } from './store/slices/gitSlice';
-import { applyExtensions, isThemeAvailable } from './extensions/registry';
+import { RemoteSlice, createRemoteSlice } from './store/slices/remoteSlice';
+import { ExtensionSlice, createExtensionSlice } from './store/slices/extensionSlice';
 
 export type SelectedNodeKind = 'file' | 'directory';
 
@@ -56,7 +56,7 @@ export interface OpenFilePathOptions {
   line?: number;
 }
 
-interface EditorState extends LayoutSlice, TerminalSlice, GitSlice {
+interface EditorState extends LayoutSlice, TerminalSlice, GitSlice, RemoteSlice, ExtensionSlice {
   // Workspace
   workspacePath: string | null;
   workspaceName: string | null;
@@ -127,8 +127,6 @@ interface EditorState extends LayoutSlice, TerminalSlice, GitSlice {
   // ── AI Panel actions ────────────────────────────────────────────────
   toggleAIPanel: () => void;
   setAIApiKeyModalOpen: (open: boolean) => void;
-  setTheme: (theme: string) => void;
-  setIconTheme: (theme: string | null) => void;
   openExtensionDetail: (ext: InstalledExtension | MarketplaceExtension) => void;
   refreshAIConfig: () => Promise<void>;
   setAIAvailableModels: (provider: ProviderId, models: string[]) => void;
@@ -204,34 +202,6 @@ interface EditorState extends LayoutSlice, TerminalSlice, GitSlice {
   updateProblemsForFile: (filePath: string, problems: Problem[]) => void;
   clearProblems: () => void;
 
-  // ── Extensions (VSIX / Open VSX) ────────────────────────────────────
-  /** Extensions installed from VSIX/Open VSX. Forge activates supported
-   *  declarative contributions and keeps the rest as package metadata. */
-  installedExtensions: InstalledExtension[];
-  /** Monaco theme id currently applied to the editor. */
-  activeTheme: string;
-  activeIconTheme: string | null;
-  /** Load the installed-extension list from the main process and wire
-   *  supported contributions into Monaco. Called once on startup. */
-  refreshExtensions: () => Promise<void>;
-  /** True while a VSIX is being installed (file picker or Open VSX). */
-  extBusy: boolean;
-  /** Last install error, shown in the Extensions panel. */
-  extError: string | null;
-  /** Marketplace search state backed by Open VSX. */
-  marketplaceResults: MarketplaceSearchResult;
-  marketplaceBusy: boolean;
-  marketplaceError: string | null;
-  searchMarketplace: (query: string, size?: number) => Promise<void>;
-  /** Open the VSIX picker and install. Resolves with an error message to
-   *  show, or null on success/cancel. */
-  installVsixExtension: () => Promise<string | null>;
-  /** Download `publisher.name` from Open VSX and install it. Shows the
-   *  Extensions panel so progress/errors are visible. */
-  installExtensionById: (extensionId: string) => Promise<string | null>;
-  uninstallExtension: (id: string) => Promise<void>;
-  setColorTheme: (themeId: string) => Promise<void>;
-
   // Actions
   openFolder: (folderPath?: string) => Promise<void>;
   refreshFileTree: () => Promise<void>;
@@ -270,7 +240,6 @@ interface EditorState extends LayoutSlice, TerminalSlice, GitSlice {
   clearPendingEditorReveal: (id: number) => void;
   saveFile: (tabId?: string) => Promise<void>;
   closeWorkspace: () => void;
-  openRemoteWorkspace: () => Promise<void>;
 
   // ── Terminal Session ────────────────────────────────────────────────
   ensureTerminalSession: () => string;
@@ -330,74 +299,6 @@ function joinPath(parent: string, name: string): string {
   return parent.endsWith(sep) ? `${parent}${name}` : `${parent}${sep}${name}`;
 }
 
-/** ipcRenderer.invoke wraps thrown errors as
- *  "Error invoking remote method 'x': Error: <real message>" — unwrap it. */
-function cleanIpcError(message: string): string {
-  return message.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
-}
-
-function asNumber(value: unknown, fallback = 0): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function normalizeMarketplaceExtension(raw: any) {
-  const namespace = typeof raw?.namespace === 'string' ? raw.namespace : '';
-  const name = typeof raw?.name === 'string' ? raw.name : '';
-  if (!namespace || !name) return null;
-
-  return {
-    id: `${namespace}.${name}`.toLowerCase(),
-    namespace,
-    name,
-    displayName:
-      typeof raw.displayName === 'string' && raw.displayName.trim()
-        ? raw.displayName
-        : name,
-    description: typeof raw.description === 'string' ? raw.description : '',
-    version: typeof raw.version === 'string' ? raw.version : '',
-    iconUrl: typeof raw?.files?.icon === 'string' ? raw.files.icon : null,
-    downloadCount: asNumber(raw.downloadCount),
-    averageRating:
-      typeof raw.averageRating === 'number' && Number.isFinite(raw.averageRating)
-        ? raw.averageRating
-        : null,
-    reviewCount: asNumber(raw.reviewCount),
-    verified: Boolean(raw.verified),
-    deprecated: Boolean(raw.deprecated),
-    lastUpdated: typeof raw.timestamp === 'string' ? raw.timestamp : null,
-  };
-}
-
-async function searchOpenVsxFromRenderer(
-  query: string,
-  size: number,
-): Promise<MarketplaceSearchResult> {
-  const url = new URL('https://open-vsx.org/api/-/search');
-  const cleanQuery = query.trim();
-  if (cleanQuery) url.searchParams.set('query', cleanQuery);
-  url.searchParams.set('size', String(Math.max(1, Math.min(50, Math.round(size)))));
-  url.searchParams.set('sortBy', 'relevance');
-  url.searchParams.set('sortOrder', 'desc');
-
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    throw new Error(`Open VSX respondió ${res.status} al buscar extensiones.`);
-  }
-  const data = await res.json();
-  const extensions = Array.isArray(data?.extensions)
-    ? data.extensions
-        .map(normalizeMarketplaceExtension)
-        .filter((
-          ext: ReturnType<typeof normalizeMarketplaceExtension>,
-        ): ext is NonNullable<ReturnType<typeof normalizeMarketplaceExtension>> => Boolean(ext))
-    : [];
-
-  return {
-    total: asNumber(data?.totalSize, extensions.length),
-    extensions,
-  };
-}
-
 function dirname(p: string): string {
   const sep = p.includes('\\') && !p.includes('/') ? '\\' : '/';
   const idx = p.lastIndexOf(sep);
@@ -405,7 +306,9 @@ function dirname(p: string): string {
 }
 
 function isAbsolutePath(p: string): boolean {
-  return p.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(p);
+  // Workspace providers use absolute URI-like identifiers (for example
+  // ssh://host/path). Joining one of these to the workspace root corrupts it.
+  return p.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(p) || /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(p);
 }
 
 function resolveWorkspacePath(workspacePath: string, filePath: string): string {
@@ -574,6 +477,8 @@ export const useStore = create<EditorState>((set, get, api) => ({
   ...createLayoutSlice(set, get, api as any),
   ...createTerminalSlice(set, get, api as any),
   ...createGitSlice(set, get, api as any),
+  ...createRemoteSlice(set, get, api as any),
+  ...createExtensionSlice(set, get, api as any),
   // Initial state
   workspacePath: null,
   workspaceName: null,
@@ -639,16 +544,6 @@ export const useStore = create<EditorState>((set, get, api) => ({
   formatActiveDocument: null,
   runEditorAction: null,
 
-  // Extensions initial state
-  installedExtensions: [],
-  activeTheme: 'forge-dark',
-  activeIconTheme: null,
-  extBusy: false,
-  extError: null,
-  marketplaceResults: { total: 0, extensions: [] },
-  marketplaceBusy: false,
-  marketplaceError: null,
-
   // ── Quick Open actions ──────────────────────────────────────────────
   setQuickOpenOpen: (open: boolean) => {
     set({ quickOpenOpen: open });
@@ -707,31 +602,7 @@ export const useStore = create<EditorState>((set, get, api) => ({
     set({ problems: [] });
   },
 
-  // ── Extension actions ───────────────────────────────────────────────
-  refreshExtensions: async () => {
-    try {
-      const { extensions, activeTheme } = await window.electronAPI.ext.list();
-      applyExtensions(extensions);
-      set({
-        installedExtensions: extensions,
-        activeTheme:
-          activeTheme && extensions.some((e) => e.themes.some((t) => t.id === activeTheme))
-            ? activeTheme
-            : 'forge-dark',
-      });
-    } catch (err) {
-      console.error('Failed to refresh extensions:', err);
-    }
-  },
-  setTheme: (theme: string) => {
-    set({ activeTheme: theme });
-    applyExtensions(get().installedExtensions);
-  },
-
-  setIconTheme: (theme: string | null) => {
-    set({ activeIconTheme: theme });
-  },
-
+  // ── Extension actions (rest live in extensionSlice) ─────────────────
   openExtensionDetail: (ext: InstalledExtension | MarketplaceExtension) => {
     const tabId = `extension:${ext.id}`;
     const { openTabs } = get();
@@ -754,96 +625,6 @@ export const useStore = create<EditorState>((set, get, api) => ({
       openTabs: [...state.openTabs, newTab],
       activeTabId: tabId,
     }));
-  },
-
-  installVsixExtension: async () => {
-    set({ extBusy: true, extError: null });
-    try {
-      if (!window.electronAPI?.ext?.installVsix) {
-        throw new Error('La instalación de VSIX requiere abrir Forge como app de Electron.');
-      }
-      const installed = await window.electronAPI.ext.installVsix();
-      if (!installed) return null; // dialog cancelled
-      await get().refreshExtensions();
-      // Convenience: if the extension ships themes, apply the first one so
-      // the user sees the result immediately.
-      const firstTheme = installed.themes[0];
-      if (firstTheme) {
-        await get().setColorTheme(firstTheme.id);
-      }
-      return null;
-    } catch (err) {
-      const message = cleanIpcError((err as Error).message || 'No se pudo instalar la extensión.');
-      set({ extError: message });
-      return message;
-    } finally {
-      set({ extBusy: false });
-    }
-  },
-
-  installExtensionById: async (extensionId: string) => {
-    // Make the Extensions panel visible so the spinner / error has a home —
-    // this action is usually triggered from the command palette.
-    set({
-      activeSidebarPanel: 'extensions',
-      sidebarVisible: true,
-      extBusy: true,
-      extError: null,
-    });
-    try {
-      if (!window.electronAPI?.ext?.installFromOpenVsx) {
-        throw new Error('La instalación desde Marketplace requiere abrir Forge como app de Electron.');
-      }
-      const installed = await window.electronAPI.ext.installFromOpenVsx(extensionId);
-      await get().refreshExtensions();
-      const firstTheme = installed.themes[0];
-      if (firstTheme) {
-        await get().setColorTheme(firstTheme.id);
-      }
-      return null;
-    } catch (err) {
-      const message = cleanIpcError((err as Error).message || 'No se pudo instalar la extensión.');
-      set({ extError: message });
-      return message;
-    } finally {
-      set({ extBusy: false });
-    }
-  },
-
-  uninstallExtension: async (id: string) => {
-    try {
-      await window.electronAPI.ext.uninstall(id);
-    } catch (err) {
-      console.warn('[forge] uninstallExtension failed:', (err as Error).message);
-    }
-    await get().refreshExtensions();
-  },
-
-  setColorTheme: async (themeId: string) => {
-    const safeId = isThemeAvailable(themeId) ? themeId : 'forge-dark';
-    set({ activeTheme: safeId });
-    try {
-      await window.electronAPI.ext.setActiveTheme(safeId === 'forge-dark' ? null : safeId);
-    } catch {
-      /* persisting the choice is best-effort */
-    }
-  },
-
-  searchMarketplace: async (query: string, size = 20) => {
-    set({ marketplaceBusy: true, marketplaceError: null, extError: null });
-    try {
-      const results = window.electronAPI?.ext?.searchOpenVsx
-        ? await window.electronAPI.ext.searchOpenVsx(query, size)
-        : await searchOpenVsxFromRenderer(query, size);
-      set({ marketplaceResults: results });
-    } catch (err) {
-      set({
-        marketplaceError: cleanIpcError((err as Error).message || 'No se pudo buscar en Open VSX.'),
-        marketplaceResults: { total: 0, extensions: [] },
-      });
-    } finally {
-      set({ marketplaceBusy: false });
-    }
   },
 
   // ── AI Panel actions ────────────────────────────────────────────────
@@ -1270,22 +1051,6 @@ export const useStore = create<EditorState>((set, get, api) => ({
       }
     } catch (err) {
       console.error('Failed to open folder:', err);
-    }
-  },
-
-  openRemoteWorkspace: async () => {
-    try {
-      const target = window.prompt('SSH host (example: user@server or server-alias)');
-      if (!target || !target.trim()) return;
-      const remotePath = window.prompt('Remote folder path', '~') || '~';
-      const uri = await window.electronAPI.remote.connect({
-        target: target.trim(),
-        path: remotePath.trim() || '~',
-      });
-      await get().openFolder(uri);
-    } catch (err) {
-      window.alert((err as Error)?.message || 'Failed to connect over SSH.');
-      console.error('Failed to open remote workspace:', err);
     }
   },
 

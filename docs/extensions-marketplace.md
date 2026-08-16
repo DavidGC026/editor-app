@@ -1,5 +1,10 @@
 # Extensions Marketplace
 
+> Este documento describe la implementación actual. La arquitectura objetivo y
+> el plan de evolución están en
+> [extensions-architecture.md](./extensions-architecture.md) y
+> [extensions-roadmap.md](./extensions-roadmap.md).
+
 Forge integrates a VS Code-style extension marketplace through Open VSX and local VSIX installation.
 
 ## Current Scope
@@ -11,10 +16,14 @@ Forge can install complete VSIX packages from:
 
 Installed packages are extracted under Electron `userData/extensions/<publisher.name>/` and registered in Forge's shared config file.
 
-Forge currently activates safe declarative extension contributions:
+Forge currently activates a limited declarative subset:
 
 - `contributes.themes`
 - `contributes.snippets`
+- Part of `contributes.languages`
+
+`contributes.iconThemes` is parsed and selectable in the UI, but is not yet
+applied to the Explorer and therefore remains metadata-level compatibility.
 
 All other manifest metadata is preserved so the editor can show what is installed and whether a future extension host is required.
 
@@ -55,4 +64,3 @@ Clicking a marketplace result in the Extensions panel opens a detail tab in the 
 - For installed extensions, the runtime-support status (declarative contributions vs. extension host required).
 
 The full metadata + README is fetched through the `ext:detail` IPC handler (`getOpenVsxDetail` in `electron/extensions.ts`), which queries `open-vsx.org/api/<namespace>/<name>/latest`. README downloads are capped at 512 KB.
-

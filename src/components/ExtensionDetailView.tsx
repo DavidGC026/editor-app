@@ -14,6 +14,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { MarketplaceExtension, MarketplaceExtensionDetail } from '../types';
+import ExtensionSettingsSection from './ExtensionSettingsSection';
 
 function formatCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -517,25 +518,38 @@ export default function ExtensionDetailView({ extension }: { extension: Marketpl
               </SidebarSection>
             )}
 
+            {installed && <ExtensionSettingsSection extensionId={installed.id} />}
+
             {installed && (
               <SidebarSection title="Runtime Support">
                 <div className="text-[12px] space-y-1.5">
                   <span
                     className={`inline-block px-1.5 py-0.5 rounded border text-[9px] uppercase tracking-wide ${
-                      installed.supported?.requiresExtensionHost
-                        ? 'border-amber-400/25 bg-amber-400/10 text-amber-200/90'
-                        : 'border-forge-accent/25 bg-forge-accent/10 text-forge-accent'
+                      installed.compatibility.level === 'full'
+                        ? 'border-forge-accent/25 bg-forge-accent/10 text-forge-accent'
+                        : installed.compatibility.level === 'partial'
+                          ? 'border-amber-400/25 bg-amber-400/10 text-amber-200/90'
+                          : 'border-forge-border/70 bg-forge-input/70 text-forge-text/55'
                     }`}
                   >
-                    {installed.supported?.requiresExtensionHost
-                      ? 'Extension Host required'
-                      : (installed.supported?.declarative ?? []).length > 0
-                        ? 'Declarative'
-                        : 'Metadata only'}
+                    {installed.compatibility.level === 'full'
+                      ? 'Declarative'
+                      : installed.compatibility.level === 'partial'
+                        ? 'Partial'
+                        : installed.compatibility.blockers.some(
+                              (b) => b.kind === 'requires-extension-host',
+                            )
+                          ? 'Extension Host required'
+                          : 'Metadata only'}
                   </span>
-                  {(installed.supported?.declarative ?? []).length > 0 && (
+                  {installed.compatibility.supportedContributions.length > 0 && (
                     <div className="text-forge-text/60">
-                      Supported: {installed.supported.declarative.join(', ')}
+                      Supported: {installed.compatibility.supportedContributions.join(', ')}
+                    </div>
+                  )}
+                  {installed.compatibility.pendingContributions.length > 0 && (
+                    <div className="text-forge-text/45">
+                      Pending: {installed.compatibility.pendingContributions.join(', ')}
                     </div>
                   )}
                   {installed.contributes.length > 0 && (

@@ -1,0 +1,9 @@
+{
+  "include": "./base.json",
+  "colors": {
+    "editor.background": "#202020"
+  },
+  "tokenColors": [
+    { "scope": "string", "settings": { "foreground": "#99cc99" } }
+  ]
+}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, KeyRound, Loader2, Check, Trash2 } from 'lucide-react';
+import { KeyRound, Loader2, Check, Trash2 } from 'lucide-react';
 import { useStore } from '../../store';
+import Modal from '../ui/Modal';
 import type { ProviderId, ProviderInfo } from '../../types';
 
 /**
@@ -162,37 +163,37 @@ export default function ApiKeyModal() {
   const close = () => setOpen(false);
 
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.55)' }}
-      onClick={close}
-    >
-      <div
-        className="w-[520px] max-h-[80vh] bg-forge-sidebar border border-forge-border rounded-md shadow-2xl flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-forge-border">
-          <div className="flex items-center gap-2">
-            <KeyRound size={16} className="text-forge-accent" />
-            <h2 className="text-forge-text-strong text-sm font-medium">
-              {configuredProviders.length > 0
-                ? 'Gestionar proveedores de IA'
-                : 'Configurar proveedor de IA'}
-            </h2>
-          </div>
+    <Modal
+      title={
+        configuredProviders.length > 0
+          ? 'Gestionar proveedores de IA'
+          : 'Configurar proveedor de IA'
+      }
+      icon={<KeyRound size={16} className="text-forge-accent" />}
+      onClose={close}
+      footer={
+        <>
           <button
             onClick={close}
-            className="text-forge-text hover:text-forge-text-strong"
-            title="Cerrar"
+            className="px-3 py-1.5 text-[12px] text-forge-text hover:text-forge-text-strong"
           >
-            <X size={16} />
+            Cancelar
           </button>
-        </div>
-
-        {/* Body */}
-        <div className="p-4 overflow-y-auto space-y-4 sidebar-scroll">
-          {/* Configured providers — switch or delete already-saved keys */}
+          <button
+            onClick={handleActivate}
+            disabled={!selectedProvider || !selectedModel}
+            className={`px-3 py-1.5 rounded text-[12px] font-medium transition-colors
+              ${!selectedProvider || !selectedModel
+                ? 'bg-forge-input/60 text-forge-text-dim cursor-not-allowed'
+                : 'bg-forge-accent text-black hover:opacity-90'}
+            `}
+          >
+            Activar
+          </button>
+        </>
+      }
+    >
+      {/* Configured providers — switch or delete already-saved keys */}
           {configuredProviders.length > 0 && (
             <div>
               <label className="block text-xs text-forge-text-dim mb-2">
@@ -376,29 +377,6 @@ export default function ApiKeyModal() {
               )}
             </div>
           )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-forge-border">
-          <button
-            onClick={close}
-            className="px-3 py-1.5 text-[12px] text-forge-text hover:text-forge-text-strong"
-          >
-            Cancelar
-          </button>
-          <button
-            onClick={handleActivate}
-            disabled={!selectedProvider || !selectedModel}
-            className={`px-3 py-1.5 rounded text-[12px] font-medium transition-colors
-              ${!selectedProvider || !selectedModel
-                ? 'bg-forge-input/60 text-forge-text-dim cursor-not-allowed'
-                : 'bg-forge-accent text-black hover:opacity-90'}
-            `}
-          >
-            Activar
-          </button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

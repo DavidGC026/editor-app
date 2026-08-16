@@ -1,0 +1,12 @@
+{
+  "iconDefinitions": {
+    "_file": { "iconPath": "./file.svg" },
+    "_folder": { "iconPath": "./folder.svg" }
+  },
+  "file": "_file",
+  "folder": "_folder",
+  "folderExpanded": "_folder",
+  "fileExtensions": { "fixture": "_file" },
+  "fileNames": { "Fixturefile": "_file" },
+  "languageIds": { "fixture": "_file" }
+}

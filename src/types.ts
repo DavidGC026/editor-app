@@ -400,6 +400,22 @@ export interface ExtensionIconTheme {
   languageIds: Record<string, string>;
 }
 
+/** Mirror of the main-process compatibility report (extension-dto.ts). */
+export type ExtensionCompatibilityLevel = 'full' | 'partial' | 'none';
+
+export type ExtensionCompatibilityBlocker =
+  | { kind: 'requires-extension-host'; entryPoints: string[] }
+  | { kind: 'unsupported-contribution'; contribution: string }
+  | { kind: 'contribution-load-failed'; contribution: string; declared: number; loaded: number }
+  | { kind: 'integration-pending'; contribution: string };
+
+export interface ExtensionCompatibilityReport {
+  level: ExtensionCompatibilityLevel;
+  supportedContributions: string[];
+  pendingContributions: string[];
+  blockers: ExtensionCompatibilityBlocker[];
+}
+
 export interface InstalledExtension {
   id: string;
   displayName: string;
@@ -412,14 +428,99 @@ export interface InstalledExtension {
   main: string | null;
   browser: string | null;
   contributes: string[];
+  /** Legacy contract kept while the UI finishes migrating to `compatibility`. */
   supported: {
     declarative: string[];
     requiresExtensionHost: boolean;
   };
+  compatibility: ExtensionCompatibilityReport;
+  /** Disabled extensions stay installed but contribute nothing. */
+  enabled: boolean;
+  /** Retained version an explicit rollback would return to, if any. */
+  previousVersion: string | null;
   themes: ExtensionTheme[];
   snippets: ExtensionSnippets[];
   languages: ExtensionLanguageContribution[];
   iconThemes: ExtensionIconTheme[];
+  /** Settings this extension declares (`contributes.configuration`). */
+  configuration: ExtensionSetting[];
+  /** Commands this extension declares (`contributes.commands`). */
+  commands: ExtensionCommandContribution[];
+  /** Keybindings this extension declares (`contributes.keybindings`). */
+  keybindings: ExtensionKeybinding[];
+  /** TextMate grammars this extension declares (`contributes.grammars`). */
+  grammars: ExtensionGrammar[];
+  /** Menu items this extension declares (`contributes.menus`). */
+  menus: ExtensionMenuItem[];
+}
+
+/** One menu item contributed via `contributes.menus`, flattened. */
+export interface ExtensionMenuItem {
+  menu: string;
+  command: string;
+  when: string | null;
+  group: string | null;
+}
+
+/** One TextMate grammar shipped with its raw source (JSON or plist). */
+export interface ExtensionGrammar {
+  language: string | null;
+  scopeName: string;
+  path: string;
+  content: string;
+  embeddedLanguages: Record<string, string>;
+  injectTo: string[];
+}
+
+/** One command contributed via `contributes.commands`. */
+export interface ExtensionCommandContribution {
+  command: string;
+  title: string;
+  category: string | null;
+  /** `when`-clause gating where the command surfaces; null = always. */
+  enablement: string | null;
+}
+
+/** One keybinding contributed via `contributes.keybindings`. */
+export interface ExtensionKeybinding {
+  command: string;
+  key: string;
+  mac: string | null;
+  linux: string | null;
+  win: string | null;
+  when: string | null;
+}
+
+/** One setting declared under `contributes.configuration`. */
+export interface ExtensionSetting {
+  key: string;
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | null;
+  default: unknown;
+  description: string;
+  enum: unknown[] | null;
+}
+
+/** A declared setting resolved through every configuration scope. */
+export interface ExtensionConfigurationValue {
+  key: string;
+  ownerId: string;
+  type: ExtensionSetting['type'];
+  description: string;
+  enum: unknown[] | null;
+  defaultValue: unknown;
+  overrideValue: unknown;
+  userValue: unknown;
+  /** Value from `.forge/settings.json`; undefined without a workspace. */
+  workspaceValue: unknown;
+  effectiveValue: unknown;
+  effectiveSource: 'default' | 'extension-override' | 'user' | 'workspace';
+}
+
+/** An installed extension with a newer version published in the catalog. */
+export interface ExtensionUpdateInfo {
+  id: string;
+  installedVersion: string;
+  latestVersion: string;
 }
 
 export interface MarketplaceExtension {
@@ -493,6 +594,11 @@ export interface ElectronAPI {
   // Remote SSH workspace
   remote: {
     connect: (args: { target: string; path: string }) => Promise<string>;
+    browse: (args: { target: string; path: string }) => Promise<{
+      path: string;
+      parent: string | null;
+      directories: { name: string; path: string }[];
+    }>;
   };
   // File System
   readDirectory: (dirPath: string) => Promise<TreeNode[]>;
@@ -666,8 +772,29 @@ export interface ElectronAPI {
     searchOpenVsx: (query: string, size?: number) => Promise<MarketplaceSearchResult>;
     /** Full metadata + README for the extension-detail tab. */
     detail: (extensionId: string) => Promise<MarketplaceExtensionDetail>;
-    list: () => Promise<{ extensions: InstalledExtension[]; activeTheme: string | null; activeIconTheme: string | null }>;
+    list: () => Promise<{
+      protocolVersion: 1;
+      extensions: InstalledExtension[];
+      activeTheme: string | null;
+      activeIconTheme: string | null;
+    }>;
     uninstall: (id: string) => Promise<boolean>;
+    setEnabled: (id: string, enabled: boolean) => Promise<boolean>;
+    /** Installed extensions with a newer version published in the catalog. */
+    checkUpdates: () => Promise<ExtensionUpdateInfo[]>;
+    rollback: (id: string) => Promise<InstalledExtension>;
+    /** Every setting contributed by installed extensions, fully resolved. */
+    listConfiguration: () => Promise<ExtensionConfigurationValue[]>;
+    /** `undefined` clears the value in the given scope (default: user). */
+    setConfigurationValue: (
+      key: string,
+      value: unknown,
+      scope?: 'user' | 'workspace',
+    ) => Promise<boolean>;
+    /** Fires after every configuration write ('*' = workspace switched). */
+    onConfigurationChanged: (
+      callback: (key: string) => void,
+    ) => { dispose: () => void };
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
   };

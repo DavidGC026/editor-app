@@ -1,0 +1,229 @@
+// ── Extension commands + keybindings (renderer) ─────────────────────────
+//
+// Two small services with a single seam between them:
+//
+//   • ExtensionCommandService — maps command ids to runtime handlers and
+//     executes them. Declarative `contributes.commands` only ships
+//     metadata; until the Extension Host (Milestone 3) provides handlers,
+//     executing one is a well-reported no-op.
+//   • KeybindingService — resolves `contributes.keybindings` chords for
+//     the current platform and dispatches keyboard events to commands,
+//     gated by their `when`-clauses.
+//
+// Both are erasable TypeScript (tested unbundled via Node type stripping)
+// and receive their collaborators as functions, not imports (DIP).
+
+import type { Disposable } from './contributionRegistry';
+
+export type ExtensionCommandHandler = (...args: unknown[]) => unknown;
+
+export class ExtensionCommandService {
+  private readonly handlers = new Map<string, ExtensionCommandHandler>();
+  private readonly warn: (message: string) => void;
+
+  constructor(warn?: (message: string) => void) {
+    this.warn = warn ?? ((message) => console.warn('[forge:ext]', message));
+  }
+
+  /** Registers the handler for a command id (last registration wins, as in
+   *  VS Code's registerCommand). Disposing removes it only if it is still
+   *  the active handler. */
+  registerHandler(command: string, handler: ExtensionCommandHandler): Disposable {
+    this.handlers.set(command, handler);
+    return {
+      dispose: () => {
+        if (this.handlers.get(command) === handler) this.handlers.delete(command);
+      },
+    };
+  }
+
+  hasHandler(command: string): boolean {
+    return this.handlers.has(command);
+  }
+
+  /** Runs the command's handler. Returns false when there is none (the
+   *  extension's code would need the future Extension Host) or it threw. */
+  execute(command: string, ...args: unknown[]): boolean {
+    const handler = this.handlers.get(command);
+    if (!handler) {
+      this.warn(`command "${command}" has no handler yet (requires the Extension Host)`);
+      return false;
+    }
+    try {
+      handler(...args);
+      return true;
+    } catch (err) {
+      this.warn(`command "${command}" failed: ${(err as Error).message}`);
+      return false;
+    }
+  }
+}
+
+// ── Keybindings ─────────────────────────────────────────────────────────
+
+/** Declarative binding as it arrives in the extension payload. Structural
+ *  twin of `ExtensionKeybinding` in types.ts, declared locally so this
+ *  module stays importable without the workbench type barrel. */
+export interface ExtensionKeybindingContribution {
+  command: string;
+  key: string;
+  mac: string | null;
+  linux: string | null;
+  win: string | null;
+  when: string | null;
+}
+
+export type KeybindingPlatform = 'mac' | 'win' | 'linux';
+
+/** The subset of KeyboardEvent the dispatcher needs (DOM-free for tests). */
+export interface KeyStrokeEvent {
+  key: string;
+  code?: string;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+}
+
+export interface ParsedChord {
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+  meta: boolean;
+  key: string;
+}
+
+/** VS Code key names → `KeyboardEvent.key` (lowercased) equivalents. */
+const KEY_NAME_TO_EVENT_KEY: Record<string, string> = {
+  up: 'arrowup',
+  down: 'arrowdown',
+  left: 'arrowleft',
+  right: 'arrowright',
+  space: ' ',
+  escape: 'escape',
+  enter: 'enter',
+  tab: 'tab',
+  backspace: 'backspace',
+  delete: 'delete',
+  insert: 'insert',
+  home: 'home',
+  end: 'end',
+  pageup: 'pageup',
+  pagedown: 'pagedown',
+};
+
+/**
+ * Parses a single-stroke chord like `ctrl+shift+p`. Multi-stroke chords
+ * (`ctrl+k ctrl+s`) return null — Forge's dispatcher is single-stroke for
+ * now. `cmd`/`meta`/`win` all map to the meta modifier.
+ */
+export function parseChord(chord: string): ParsedChord | null {
+  if (/\s/.test(chord.trim())) return null;
+  const parsed: ParsedChord = { ctrl: false, shift: false, alt: false, meta: false, key: '' };
+  for (const rawPart of chord.split('+')) {
+    const part = rawPart.trim().toLowerCase();
+    if (!part) return null;
+    if (part === 'ctrl' || part === 'control') parsed.ctrl = true;
+    else if (part === 'shift') parsed.shift = true;
+    else if (part === 'alt' || part === 'option') parsed.alt = true;
+    else if (part === 'cmd' || part === 'meta' || part === 'win') parsed.meta = true;
+    else if (parsed.key) return null; // two non-modifier parts
+    else parsed.key = KEY_NAME_TO_EVENT_KEY[part] ?? part;
+  }
+  return parsed.key ? parsed : null;
+}
+
+/** Chord to resolve on `platform`, falling back to the default `key`. */
+export function chordForPlatform(
+  binding: ExtensionKeybindingContribution,
+  platform: KeybindingPlatform,
+): string {
+  const specific = platform === 'mac' ? binding.mac : platform === 'win' ? binding.win : binding.linux;
+  return specific ?? binding.key;
+}
+
+export function matchesStroke(chord: ParsedChord, event: KeyStrokeEvent): boolean {
+  return (
+    chord.ctrl === event.ctrlKey &&
+    chord.shift === event.shiftKey &&
+    chord.alt === event.altKey &&
+    chord.meta === event.metaKey &&
+    chord.key === event.key.toLowerCase()
+  );
+}
+
+export interface KeybindingServiceOptions {
+  /** Evaluates a binding's when-clause (null always matches). */
+  matchWhen: (expression: string | null) => boolean;
+  /** Runs the command; false = no handler, the event is not consumed. */
+  execute: (command: string) => boolean;
+  platform?: KeybindingPlatform;
+  warn?: (message: string) => void;
+}
+
+interface RegisteredKeybinding {
+  chord: ParsedChord;
+  command: string;
+  when: string | null;
+}
+
+function detectPlatform(): KeybindingPlatform {
+  const platform = typeof navigator === 'undefined' ? '' : navigator.platform.toLowerCase();
+  if (platform.includes('mac')) return 'mac';
+  if (platform.includes('win')) return 'win';
+  return 'linux';
+}
+
+export class KeybindingService {
+  private readonly bindings: RegisteredKeybinding[] = [];
+  private readonly options: Required<Omit<KeybindingServiceOptions, 'warn' | 'platform'>> & {
+    platform: KeybindingPlatform;
+    warn: (message: string) => void;
+  };
+
+  constructor(options: KeybindingServiceOptions) {
+    this.options = {
+      matchWhen: options.matchWhen,
+      execute: options.execute,
+      platform: options.platform ?? detectPlatform(),
+      warn: options.warn ?? ((message) => console.warn('[forge:ext]', message)),
+    };
+  }
+
+  /** Registers one contributed binding. Unsupported chords (multi-stroke,
+   *  unparsable) warn and return an inert disposable. */
+  register(binding: ExtensionKeybindingContribution): Disposable {
+    const chordText = chordForPlatform(binding, this.options.platform);
+    const chord = parseChord(chordText);
+    if (!chord) {
+      this.options.warn(
+        `keybinding "${chordText}" for "${binding.command}" is not supported (single-stroke chords only)`,
+      );
+      return { dispose: () => {} };
+    }
+    const entry: RegisteredKeybinding = { chord, command: binding.command, when: binding.when };
+    this.bindings.push(entry);
+    return {
+      dispose: () => {
+        const index = this.bindings.indexOf(entry);
+        if (index >= 0) this.bindings.splice(index, 1);
+      },
+    };
+  }
+
+  /**
+   * Dispatches a keystroke: the most recently registered matching binding
+   * whose when-clause holds wins (VS Code resolves ties the same way).
+   * Returns true only when a handler actually ran, so a binding without a
+   * runtime handler never swallows the user's keystroke.
+   */
+  dispatch(event: KeyStrokeEvent): boolean {
+    for (let i = this.bindings.length - 1; i >= 0; i -= 1) {
+      const binding = this.bindings[i];
+      if (!matchesStroke(binding.chord, event)) continue;
+      if (!this.options.matchWhen(binding.when)) continue;
+      return this.options.execute(binding.command);
+    }
+    return false;
+  }
+}
