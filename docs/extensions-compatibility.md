@@ -52,7 +52,8 @@ Actualizada al cierre del Milestone 2
 | LSP/DAP/tasks/testing | `unsupported` | Forge tiene piezas nativas, aún sin bridge de extensiones |
 | Views/webviews/notebooks | `unsupported` | Sin workbench contribution hosts |
 | Remote extension host | `unsupported` | Remote SSH no ejecuta extensiones junto al workspace |
-| Workspace Trust | `unsupported` | Bloqueador para ejecutar código de terceros; es el incremento 3.0 |
+| Workspace Trust | `partial` | Trust por workspace y Restricted Mode con política de activación; falta la mitad runtime (el host aún no ejecuta nada) |
+| Extension Host (kernel) | `partial` | `utilityProcess` con handshake, envelope RPC, heartbeat, backoff y circuit breaker; todavía no carga extensiones (3.2) |
 
 ## Matriz objetivo por contribution point
 

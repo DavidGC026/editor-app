@@ -144,5 +144,22 @@ El archivo principal de estado global (`store.ts`) creció desmesuradamente a ~2
   y `enablement`, marcando los que aún necesitan el Extension Host. Cierra
   el Milestone 2.
 
+- **Extensiones Milestone 3.0**: Workspace Trust y Restricted Mode —
+  servicio en main con puerto y adaptador atómico, estado por workspace
+  (los nuevos y los remotos empiezan sin confianza), IPC `ext:trust:*` con
+  broadcast, banner en el panel y política de activación por
+  `capabilities.untrustedWorkspaces`. Las fixtures maliciosas destaparon
+  tres agujeros reales de instalación (symlink fuera del paquete,
+  `publisher` con separadores escribiendo fuera del store, capacidades
+  contradictorias sin leer), todos cerrados.
+  Ver [extensions-phase3-trust.md](./extensions-phase3-trust.md).
+- **Extensiones Milestone 3.1**: kernel del Extension Host —
+  `utilityProcess` con handshake, envelope RPC versionado con generaciones,
+  timeouts por familia, cancelación, agregación de logs, heartbeat, backoff
+  y circuit breaker. El broker no depende de Electron (transporte y timers
+  inyectados) y el puerto `ExtensionHost` es implementable por un doble en
+  proceso. Todavía no carga código de extensión.
+  Ver [extensions-phase3-progress.md](./extensions-phase3-progress.md).
+
 Actualmente `store.ts` ha delegado Layout, Terminal, Git, Remote y Extensiones a
 slices específicos.

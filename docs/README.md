@@ -29,7 +29,9 @@ El trabajo grande del proyecto. Se lee en este orden:
 | [extensions-phase0-progress.md](./extensions-phase0-progress.md) | 0 — contratos, manifest reader, DTOs y readers segregados. |
 | [extensions-phase1-progress.md](./extensions-phase1-progress.md) | 1 — package store transaccional, instalación, updates y rollback. |
 | [extensions-phase2-progress.md](./extensions-phase2-progress.md) | 2 — motor declarativo completo (2.0–2.7): configuration, ContributionRegistry, grammars TextMate, commands/keybindings, menus y la superficie de la vista de detalle. |
-| [extensions-phase3-design.md](./extensions-phase3-design.md) | 3 — **diseño** del kernel del Extension Host: runtime, protocolo, activación, modelo de fallos y plan de incrementos. |
+| [extensions-phase3-design.md](./extensions-phase3-design.md) | 3 — **diseño** del kernel del Extension Host: runtime, protocolo, activación, modelo de fallos y plan de incrementos 3.0–3.6. |
+| [extensions-phase3-trust.md](./extensions-phase3-trust.md) | 3.0 — Workspace Trust, Restricted Mode y las fixtures maliciosas de instalación. Prerrequisito del gate de seguridad. |
+| [extensions-phase3-progress.md](./extensions-phase3-progress.md) | 3.1+ — progreso del kernel: utilityProcess, envelope RPC, heartbeat, reinicio y lo que venga detrás. |
 
 ### Notas históricas
 

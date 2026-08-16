@@ -154,6 +154,17 @@ Criterios de salida:
 
 Objetivo: activar de forma aislada extensiones simples basadas en comandos.
 
+Estado: **en progreso**. Incremento 3.0 cerró Workspace Trust y Restricted
+Mode, y de paso tres agujeros reales de instalación que las fixtures
+maliciosas destaparon: symlinks que escapaban del paquete, un `publisher`
+con separadores que escribía fuera del store y capacidades contradictorias
+que ni se leían
+([extensions-phase3-trust.md](./extensions-phase3-trust.md)). Incremento
+3.1 levantó el kernel del host —`utilityProcess`, handshake, envelope RPC
+con generaciones, timeouts por familia, heartbeat, backoff y circuit
+breaker— todavía sin cargar código de extensión
+([extensions-phase3-progress.md](./extensions-phase3-progress.md)).
+
 Diseño detallado (runtime, protocolo RPC, activación, modelo de fallos y
 plan de incrementos 3.0–3.6):
 [extensions-phase3-design.md](./extensions-phase3-design.md). Decisiones
