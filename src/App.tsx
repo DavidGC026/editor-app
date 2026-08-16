@@ -14,6 +14,7 @@ import { Bot, Eraser, Maximize2, MessageSquare, Minimize2, RotateCcw, Terminal a
 import type { ClaudeIdeEditorState } from './types';
 import { lspClient } from './lsp/client';
 import { contextKeys } from './extensions/contextKeys';
+import { editorResourceContext } from './extensions/menus';
 import { extensionKeybindingService } from './extensions/registry';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -494,6 +495,11 @@ export default function App() {
       contextKeys.set('sidebarVisible', state.sidebarVisible);
       contextKeys.set('panelVisible', state.bottomPanelVisible);
       contextKeys.set('gitOpenRepositoryCount', state.gitIsRepo ? 1 : 0);
+      // `resource*` keys for the file in the active editor — what
+      // `editor/context` items gate on (`resourceExtname == '.md'`).
+      for (const [key, value] of Object.entries(editorResourceContext(activeTab ?? null))) {
+        contextKeys.set(key, value);
+      }
     };
     publish(useStore.getState());
     return useStore.subscribe(publish);

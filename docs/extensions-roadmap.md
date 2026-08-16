@@ -115,7 +115,12 @@ milestone). Incremento 2.5 completó `menus` declarativos: los items de
 por sus cláusulas `when` contra keys de recurso transitorias, con títulos
 resueltos entre extensiones y orden de grupos de VS Code; al derivarse de
 los payloads instalados no pueden quedar registros huérfanos (tercer
-criterio de salida). Progreso detallado:
+criterio de salida). Incremento 2.6 llevó `editor/context` al menú
+contextual de Monaco: acciones globales con ids namespaciados por dueño,
+`group@order` traducido a los campos de Monaco y — como Monaco no admite
+predicados de visibilidad — un conjunto registrado que se reconcilia por
+diff cuando cambian las extensiones o las context keys, con las keys
+`resource*` del tab activo publicadas por el workbench. Progreso detallado:
 [extensions-phase2-progress.md](./extensions-phase2-progress.md)
 
 Orden de contribution points:

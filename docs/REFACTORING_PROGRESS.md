@@ -127,6 +127,15 @@ El archivo principal de estado global (`store.ts`) creció desmesuradamente a ~2
   de `explorer/context` gateados por `when` para el nodo clicado y ejecuta
   con la ruta como argumento. Derivado de payloads: sin registros
   huérfanos por construcción.
+- **Extensiones Milestone 2.6**: `editor/context` sobre Monaco —
+  `EditorMenuService` registra los items como acciones globales
+  (`monaco.editor.addEditorAction`) con ids namespaciados por dueño y
+  traduce `group@order` a `contextMenuGroupId`/`contextMenuOrder`. Como
+  Monaco no admite predicados de visibilidad, el conjunto registrado se
+  reconcilia por diff ante cambios del set de extensiones y de context keys
+  (coalescidos en microtask). `editorResourceContext` publica las keys
+  `resource*` del tab activo y la ejecución pasa por el
+  `ExtensionCommandService` con la ruta como argumento.
 
 Actualmente `store.ts` ha delegado Layout, Terminal, Git, Remote y Extensiones a
 slices específicos.

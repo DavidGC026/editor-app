@@ -34,7 +34,7 @@ export interface ResolvedMenuItem {
 
 // VS Code group semantics: `navigation` sorts first, then groups
 // alphabetically; `name@order` sorts by the numeric suffix within a group.
-function groupRank(group: string | null): { name: string; order: number } {
+export function groupRank(group: string | null): { name: string; order: number } {
   if (!group) return { name: '9_zzz_default', order: 0 };
   const at = group.lastIndexOf('@');
   const name = at > 0 ? group.slice(0, at) : group;
@@ -93,6 +93,18 @@ export function filterMenuItems(
   return items.filter((item) => match(item.when));
 }
 
+/** The `resource*` keys VS Code exposes for a file path. A leading dot is
+ *  part of the name, not an extension (`.gitignore` has none). */
+function resourceKeys(path: string, name: string): Record<string, unknown> {
+  const dot = name.lastIndexOf('.');
+  return {
+    resourceScheme: 'file',
+    resourcePath: path,
+    resourceFilename: name,
+    resourceExtname: dot > 0 ? name.slice(dot) : '',
+  };
+}
+
 /** Transient context keys describing the file-tree node a context menu
  *  opened on, mirroring the VS Code names extension authors target. */
 export function explorerResourceContext(node: {
@@ -102,12 +114,36 @@ export function explorerResourceContext(node: {
   type: string;
 }): Record<string, unknown> {
   const isFile = node.type === 'file';
-  const dot = node.name.lastIndexOf('.');
+  const keys = resourceKeys(node.path, node.name);
   return {
-    resourceScheme: 'file',
-    resourcePath: node.path,
-    resourceFilename: node.name,
-    resourceExtname: isFile && dot > 0 ? node.name.slice(dot) : '',
+    ...keys,
+    // A folder has no extension, whatever dots its name carries.
+    resourceExtname: isFile ? keys.resourceExtname : '',
     explorerResourceIsFolder: !isFile,
+  };
+}
+
+/** Context keys describing the file open in the active editor. Unlike the
+ *  explorer's, these are workbench state (they change with the active tab),
+ *  so the workbench publishes them into the ContextKeyService instead of
+ *  overlaying them at menu-open time. Returns every key as `undefined` when
+ *  no editor is open, which clears them. */
+export function editorResourceContext(tab: {
+  path: string | null;
+  name: string;
+  language?: string | null;
+} | null): Record<string, unknown> {
+  if (!tab || !tab.path) {
+    return {
+      resourceScheme: undefined,
+      resourcePath: undefined,
+      resourceFilename: undefined,
+      resourceExtname: undefined,
+      resourceLangId: undefined,
+    };
+  }
+  return {
+    ...resourceKeys(tab.path, tab.name),
+    resourceLangId: tab.language ?? undefined,
   };
 }

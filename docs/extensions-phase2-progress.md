@@ -394,13 +394,70 @@ keys de recurso (incluido el dotfile) y aislamiento del overlay.
   cláusulas de recurso (`resourceExtname == '.html'`) dependen del nodo
   clicado y no tienen sentido precomputadas.
 
+## Incremento 2.6 — `editor/context` en Monaco
+
+Completado (2026-08-15):
+
+- **`editorMenu.ts`** (renderer): `EditorMenuService` mapea los items de
+  `editor/context` a acciones de Monaco vía `monaco.editor.addEditorAction`
+  (global y con `IDisposable`, a diferencia de `editor.addAction`, que es
+  por instancia de editor). `toEditorActionDescriptor` traduce la sintaxis
+  `group@order` de VS Code a los dos campos separados de Monaco
+  (`contextMenuGroupId` / `contextMenuOrder`) reutilizando el `groupRank`
+  de `menus.ts`; los ids se namespacian como
+  `forge.extension.<owner>.<command>` para que dos extensiones que aportan
+  el mismo comando no colisionen.
+- **Visibilidad por reconciliación**: Monaco no acepta un predicado de
+  visibilidad — una acción está registrada (y se ve) o no existe. En vez de
+  registrar todo y ocultar después, el servicio mantiene el conjunto
+  registrado igual al de items cuyo `when` se cumple *ahora*, con un diff
+  sobre dos disparadores: cambio del conjunto de extensiones
+  (`applyExtensions`) y cambio de context keys (suscripción a
+  `contextKeys.onDidChange`, coalescida en un microtask porque el workbench
+  publica sus keys de una en una). Un cambio de `editorLangId` mueve sólo
+  los items afectados; los incondicionales no se re-registran.
+- **Keys del recurso activo**: `editorResourceContext(tab)` produce
+  `resourceScheme`, `resourcePath`, `resourceFilename`, `resourceExtname` y
+  `resourceLangId` del archivo del tab activo, y `App.tsx` las publica en el
+  `ContextKeyService` junto al resto de keys del workbench. A diferencia de
+  las del explorador, no son transitorias (dependen del tab activo, no del
+  clic), así que van al estado compartido en lugar del overlay; sin editor
+  abierto se limpian todas.
+- **Ejecución**: `run` pasa por `extensionCommandService.execute(command,
+  resourcePath)` — misma ruta que el explorador y los keybindings, así que
+  el Extension Host sólo tendrá que registrar handlers.
+
+Pruebas añadidas (`tests/extensions/editor-menu.test.cjs`, 12 casos, 101 en
+total): mapeo del descriptor y grupos, ids por dueño, gating por `when`,
+diff ante cambios de context key, retirada al deshabilitar/desinstalar,
+re-registro sólo cuando cambia el label, `attach` de un Monaco nuevo sin
+fugas, items contribuidos antes del attach, aislamiento de un host que
+rechaza un registro, ejecución con el recurso activo y las keys de recurso
+del editor.
+
+### Decisiones del incremento 2.6
+
+- **Ownership por derivación, no por applier**: como el conjunto visible
+  depende de las context keys y no sólo de la versión de la extensión, el
+  `ContributionRegistry` (que hace fingerprint por versión) no encajaba;
+  el servicio deriva sus items del conjunto activo y su propio diff hace de
+  cleanup — una extensión que se va deja de aportar items y sus acciones se
+  retiran en el mismo pase.
+- **`addEditorAction` en vez de `addAction`**: la variante global registra
+  para todos los editores presentes y futuros con un solo disposable; la
+  por instancia obligaría a rastrear cada editor abierto.
+- **`precondition` de Monaco descartada**: sólo entiende las context keys de
+  su propio servicio, así que un `when` con keys de Forge se evaluaría como
+  `undefined` (item invisible sin explicación). Evaluar con nuestro
+  `ContextKeyService` mantiene una sola semántica de `when` en todo el
+  workbench.
+
 ## Próximo incremento
 
-1. `editor/context` mapeando los items al menú contextual de Monaco
-   (`monaco.editor.addAction` con ownership), o superficie de
-   keybindings/comandos en la vista de detalle de la extensión.
-2. Con el motor declarativo del Milestone 2 esencialmente completo,
-   evaluar arrancar el Milestone 3 (kernel del Node Extension Host) — los
-   comandos, menús y keybindings ya ejecutan por el
-   `ExtensionCommandService`, que es el punto donde el host registrará
-   handlers reales.
+1. Superficie de keybindings/comandos en la vista de detalle de la
+   extensión (lo último que queda del motor declarativo), o los menu ids
+   restantes según aparezcan sus superficies.
+2. Con el Milestone 2 completo, arrancar el Milestone 3 (kernel del Node
+   Extension Host) — comandos, menús del explorador, menús del editor y
+   keybindings ya ejecutan por el `ExtensionCommandService`, que es el
+   punto donde el host registrará handlers reales.
