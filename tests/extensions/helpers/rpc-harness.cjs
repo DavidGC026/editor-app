@@ -159,7 +159,16 @@ function createFakeLauncher(timers, options = {}) {
             if (child.hung || !child.alive) return;
             const scripted = options.respond?.(envelope, child);
             const answer = scripted === undefined ? respond(envelope) : scripted;
-            if (answer) child.deliver(answer);
+            // The real responder answers asynchronously for anything that runs
+            // extension code (`lifecycle.activate`); lifecycle handshakes stay
+            // synchronous, so timing-sensitive tests are unaffected.
+            if (answer && typeof answer.then === 'function') {
+              answer.then((resolved) => {
+                if (resolved && child.alive && !child.hung) child.deliver(resolved);
+              });
+            } else if (answer) {
+              child.deliver(answer);
+            }
           },
           onMessage(listener) {
             brokerListeners.add(listener);

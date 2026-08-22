@@ -51,6 +51,7 @@ import {
   createUtilityProcessLauncher,
 } from './extensions/infrastructure/hosts/utility-process-host';
 import type {
+  ExtensionHostDescriptor,
   ExtensionHostEvent,
   ExtensionHostState,
 } from './extensions/application/ports/extension-host';
@@ -577,14 +578,50 @@ export function uninstallExtension(id: string): boolean {
 // decision and therefore belongs on this side of the boundary.
 
 /** Extensions that are enabled AND allowed to activate under current trust.
- *  A blocked extension is not merely hidden in the UI: its id never reaches
- *  the host, so no generation can load it by mistake. */
-function activatableExtensionIds(): string[] {
+ *  A blocked extension is not merely hidden in the UI: it never reaches the
+ *  host, so no generation can load it by mistake. */
+function activatableExtensions(): InstalledExtensionRecord[] {
   const trustState = getWorkspaceTrustStatus().state;
   return extensionRegistry
     .list()
-    .filter((entry) => entry.enabled && isActivatableUnderTrust(entry, trustState))
-    .map((entry) => entry.id);
+    .filter((entry) => entry.enabled && isActivatableUnderTrust(entry, trustState));
+}
+
+/** Where per-extension storage lives. Under `userData`, never inside the
+ *  install directory: an upgrade replaces the latter wholesale. */
+function extensionStorageRoot(): string {
+  return path.join(app.getPath('userData'), 'extension-storage');
+}
+
+/** Directory names are derived here, on the trusted side: the host writes
+ *  only inside the path it is handed, and the id never becomes a path
+ *  segment as the manifest spelled it (design §7). */
+function storageKeyFor(id: string): string {
+  return id.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/^\.+/, '') || 'extension';
+}
+
+/** Translates a registry record into what the loader needs, and nothing
+ *  more: contributions stay on this side of the boundary. */
+function toHostDescriptor(entry: InstalledExtensionRecord): ExtensionHostDescriptor {
+  const storageRoot = extensionStorageRoot();
+  const workspace = localWorkspaceDir();
+  return {
+    id: entry.id,
+    version: entry.version,
+    dir: entry.dir,
+    main: entry.main,
+    globalStoragePath: path.join(storageRoot, 'global', storageKeyFor(entry.id)),
+    // No workspace means no workspace-scoped storage: there is nothing to
+    // scope it to, and inventing a path would leak state between projects.
+    workspaceStoragePath: workspace
+      ? path.join(storageRoot, 'workspace', storageKeyFor(workspace), storageKeyFor(entry.id))
+      : null,
+    extensionMode: app.isPackaged ? 'production' : 'development',
+  };
+}
+
+function activatableDescriptors(): ExtensionHostDescriptor[] {
+  return activatableExtensions().map(toHostDescriptor);
 }
 
 const extensionHost = new UtilityProcessExtensionHost({
@@ -596,7 +633,7 @@ const extensionHost = new UtilityProcessExtensionHost({
   // workspace, trust decision and enabled set.
   initialize: () => ({
     apiVersion: FORGE_VSCODE_API_VERSION,
-    extensions: activatableExtensionIds(),
+    extensions: activatableDescriptors(),
     workspace: workspaceProvider(),
     trust: getWorkspaceTrustStatus().state === 'trusted',
   }),
@@ -616,7 +653,7 @@ export function onExtensionHostEvent(
  *  reported, never thrown: a host that will not come up must not stop Forge
  *  from opening. */
 export async function startExtensionHost(): Promise<ExtensionHostState> {
-  if (activatableExtensionIds().length === 0) return extensionHost.state;
+  if (activatableExtensions().length === 0) return extensionHost.state;
   try {
     return await extensionHost.start();
   } catch (err) {
@@ -644,7 +681,7 @@ export function stopExtensionHost(reason = 'cierre de Forge'): Promise<void> {
 export async function syncExtensionHost(reason: string): Promise<void> {
   const status = extensionHost.state.status;
   if (status === 'stopped' || status === 'disabled') return;
-  if (activatableExtensionIds().length === 0) {
+  if (activatableExtensions().length === 0) {
     await extensionHost.stop(reason);
     return;
   }

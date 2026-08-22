@@ -1,0 +1,294 @@
+/**
+ * Loading and activation of extension code, host side.
+ *
+ * This is the module that finally executes third-party code, so every
+ * decision here is about containment:
+ *
+ * - Nothing loads until `initialize` handed over a descriptor for it. An
+ *   `activate` for an unknown id is an error, not a lazy lookup on disk.
+ * - `activate()` runs **once per generation**; concurrent requests share the
+ *   in-flight promise (design §5), so a second `onCommand` while the first
+ *   activation is still running waits instead of re-entering `activate`.
+ * - A throwing `activate` fails *that* extension: it becomes `failed`, its
+ *   subscriptions are disposed, and the host keeps serving everyone else
+ *   (design §6, first row).
+ * - Every collaborator that touches the world — `require`, the clock, the
+ *   filesystem — is injected, which is what lets the whole lifecycle be
+ *   tested with `node --test` and no Electron.
+ */
+import {
+  RpcError,
+} from '../extensions/domain/rpc-protocol';
+import type { ExtensionHostDescriptor } from '../extensions/domain/rpc-protocol';
+import {
+  createOwnerIndex,
+  describeEntryPointFailure,
+  installVscodeModuleHook,
+  resolveEntryPoint,
+} from './module-loader';
+import type { EntryPointResolverDeps, ModuleSystemLike } from './module-loader';
+import { createExtensionContext, disposeSubscriptions } from './extension-context';
+import type { ExtensionContext, MementoStore } from './extension-context';
+import { createVscodeApi } from './vscode-api/facade';
+
+export type ExtensionActivationStatus = 'inactive' | 'activating' | 'active' | 'failed';
+
+export interface ExtensionActivationResult {
+  id: string;
+  status: ExtensionActivationStatus;
+  /** Wall-clock cost of `activate()`, the seed of the 3.4 metrics. */
+  durationMs: number;
+  /** Keys of the object `activate()` returned, never the object itself: the
+   *  exports API belongs to another extension's process boundary. */
+  exports: string[];
+}
+
+export interface ExtensionRuntimeOptions {
+  apiVersion: string;
+  workspacePath: string | null;
+  moduleSystem: ModuleSystemLike;
+  /** `require`, injected: tests load fixtures without touching the real one. */
+  loadModule: (entryPoint: string) => unknown;
+  entryPointDeps: EntryPointResolverDeps;
+  mementoStore: MementoStore;
+  joinPath: (...segments: string[]) => string;
+  now: () => number;
+  log: (level: 'debug' | 'info' | 'warn' | 'error', message: string, extensionId?: string) => void;
+  /** Feeds `diagnostics.unsupportedApi`; see design §10. */
+  reportUnsupportedApi: (api: string, extensionId: string) => void;
+}
+
+interface LoadedExtension {
+  descriptor: ExtensionHostDescriptor;
+  status: ExtensionActivationStatus;
+  context: ExtensionContext | null;
+  module: { activate?: unknown; deactivate?: unknown } | null;
+  exports: unknown;
+  /** Shared while an activation is in flight (design §5). */
+  pending: Promise<ExtensionActivationResult> | null;
+  error: string | null;
+}
+
+export class ExtensionRuntime {
+  private readonly options: ExtensionRuntimeOptions;
+  private readonly loaded = new Map<string, LoadedExtension>();
+  private readonly apis = new Map<string, unknown>();
+  private uninstallHook: (() => void) | null = null;
+
+  constructor(options: ExtensionRuntimeOptions) {
+    this.options = options;
+  }
+
+  /** Publishes the descriptor set of this generation and arms the loader.
+   *  Called once, from `lifecycle.initialize`. */
+  setExtensions(descriptors: ExtensionHostDescriptor[]): void {
+    this.uninstallHook?.();
+    this.loaded.clear();
+    this.apis.clear();
+
+    for (const descriptor of descriptors) {
+      this.loaded.set(descriptor.id, {
+        descriptor,
+        status: 'inactive',
+        context: null,
+        module: null,
+        exports: undefined,
+        pending: null,
+        error: null,
+      });
+    }
+
+    // Nothing to load means nothing to intercept: a generation with no
+    // activatable extensions leaves the module system untouched.
+    if (descriptors.length === 0) return;
+
+    this.uninstallHook = installVscodeModuleHook({
+      moduleSystem: this.options.moduleSystem,
+      ownerIndex: createOwnerIndex(descriptors),
+      apiFor: (extensionId) => this.apiFor(extensionId),
+      onOrphanRequire: (filename) => {
+        this.options.log(
+          'warn',
+          `require("vscode") desde código sin dueño: ${filename ?? 'origen desconocido'}`,
+        );
+      },
+    });
+  }
+
+  statusOf(id: string): ExtensionActivationStatus | null {
+    return this.loaded.get(id)?.status ?? null;
+  }
+
+  /** Idempotent per generation: an already active extension resolves with its
+   *  current result and `activate()` is not called again. */
+  activate(id: string): Promise<ExtensionActivationResult> {
+    const entry = this.loaded.get(id);
+    if (!entry) {
+      return Promise.reject(new RpcError(
+        'INVALID_PAYLOAD',
+        `"${id}" no forma parte de esta generación del host.`,
+      ));
+    }
+    if (entry.pending) return entry.pending;
+    if (entry.status === 'active') {
+      return Promise.resolve(this.resultFor(entry, 0));
+    }
+    if (entry.status === 'failed') {
+      return Promise.reject(new RpcError(
+        'ACTIVATION_FAILED',
+        entry.error ?? `"${id}" falló al activarse en esta generación.`,
+      ));
+    }
+
+    entry.status = 'activating';
+    const started = this.options.now();
+    const pending = this.runActivation(entry, started)
+      .finally(() => {
+        entry.pending = null;
+      });
+    entry.pending = pending;
+    return pending;
+  }
+
+  private async runActivation(
+    entry: LoadedExtension,
+    started: number,
+  ): Promise<ExtensionActivationResult> {
+    const { descriptor } = entry;
+    try {
+      const resolution = resolveEntryPoint(descriptor, this.options.entryPointDeps);
+      if (!resolution.ok) {
+        throw new RpcError(
+          'ACTIVATION_FAILED',
+          describeEntryPointFailure(resolution.failure, descriptor),
+        );
+      }
+
+      // The context exists before the module is loaded: an extension may call
+      // `require('vscode')` at import time, and its facade must already be
+      // attributable to it.
+      const context = createExtensionContext({
+        descriptor,
+        store: this.options.mementoStore,
+        joinPath: this.options.joinPath,
+        onError: (err) => this.options.log(
+          'warn',
+          `almacenamiento de "${descriptor.id}": ${errorMessage(err)}`,
+          descriptor.id,
+        ),
+      });
+      entry.context = context;
+
+      const module = this.options.loadModule(resolution.entryPoint) as LoadedExtension['module'];
+      entry.module = module ?? null;
+
+      if (module && typeof module.activate === 'function') {
+        // `await` covers both shapes: VS Code allows a sync or async activate.
+        entry.exports = await (module.activate as (ctx: ExtensionContext) => unknown)(context);
+      } else {
+        // Legal and common for declarative-only extensions with a `main`.
+        this.options.log(
+          'debug',
+          `"${descriptor.id}" no exporta activate(); se considera activa sin trabajo.`,
+          descriptor.id,
+        );
+        entry.exports = undefined;
+      }
+
+      entry.status = 'active';
+      entry.error = null;
+      return this.resultFor(entry, this.options.now() - started);
+    } catch (err) {
+      entry.status = 'failed';
+      entry.error = errorMessage(err);
+      // Anything the extension registered before throwing is released here:
+      // a half-activated extension holding live disposables is worse than a
+      // failed one.
+      if (entry.context) {
+        disposeSubscriptions(entry.context, (disposeErr) => this.options.log(
+          'warn',
+          `dispose tras activación fallida de "${descriptor.id}": ${errorMessage(disposeErr)}`,
+          descriptor.id,
+        ));
+      }
+      entry.context = null;
+      entry.module = null;
+      this.options.log('error', `activación fallida: ${entry.error}`, descriptor.id);
+      throw err instanceof RpcError
+        ? err
+        : new RpcError('ACTIVATION_FAILED', entry.error, { extensionId: descriptor.id });
+    }
+  }
+
+  /**
+   * Runs the module's `deactivate()` and disposes its subscriptions. Both
+   * halves run even if the first throws: the extension gets its chance to
+   * clean up, but its failure cannot leak the disposables it registered.
+   */
+  async deactivate(id: string): Promise<void> {
+    const entry = this.loaded.get(id);
+    if (!entry || entry.status !== 'active') return;
+
+    const { module, context } = entry;
+    entry.status = 'inactive';
+    entry.module = null;
+    entry.context = null;
+    entry.exports = undefined;
+
+    try {
+      if (module && typeof module.deactivate === 'function') {
+        await (module.deactivate as () => unknown)();
+      }
+    } catch (err) {
+      this.options.log('warn', `deactivate() lanzó: ${errorMessage(err)}`, id);
+    } finally {
+      if (context) {
+        disposeSubscriptions(context, (err) => this.options.log(
+          'warn',
+          `dispose de subscriptions: ${errorMessage(err)}`,
+          id,
+        ));
+      }
+    }
+  }
+
+  /** Shutdown path: deactivates everything active, then unhooks `require`. */
+  async deactivateAll(): Promise<void> {
+    for (const id of [...this.loaded.keys()]) {
+      await this.deactivate(id);
+    }
+    this.uninstallHook?.();
+    this.uninstallHook = null;
+  }
+
+  /** One facade per extension, memoised: the identity behind `Disposable`s
+   *  and storage must not change between two `require('vscode')` calls. */
+  private apiFor(extensionId: string): unknown {
+    const cached = this.apis.get(extensionId);
+    if (cached) return cached;
+    const api = createVscodeApi({
+      extensionId,
+      apiVersion: this.options.apiVersion,
+      workspacePath: this.options.workspacePath,
+      reportUnsupported: (apiName, owner) => this.options.reportUnsupportedApi(apiName, owner),
+    });
+    this.apis.set(extensionId, api);
+    return api;
+  }
+
+  private resultFor(entry: LoadedExtension, durationMs: number): ExtensionActivationResult {
+    return {
+      id: entry.descriptor.id,
+      status: entry.status,
+      durationMs,
+      exports: entry.exports && typeof entry.exports === 'object'
+        ? Object.keys(entry.exports as object)
+        : [],
+    };
+  }
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}

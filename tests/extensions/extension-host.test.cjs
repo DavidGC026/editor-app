@@ -10,6 +10,18 @@ const {
 
 const { flush, createFakeTimers, createFakeLauncher } = require('./helpers/rpc-harness.cjs');
 
+/** A descriptor with no `main`: the kernel tests care about the protocol,
+ *  not about loading code — that is `extension-runtime.test.cjs`. */
+const DEMO_DESCRIPTOR = {
+  id: 'acme.demo',
+  version: '1.0.0',
+  dir: '/store/acme.demo/1.0.0',
+  main: null,
+  globalStoragePath: '/storage/global/acme.demo',
+  workspaceStoragePath: null,
+  extensionMode: 'test',
+};
+
 function createHost({ launcher: launcherOptions, ...hostOptions } = {}) {
   const timers = createFakeTimers();
   const launcher = createFakeLauncher(timers, launcherOptions);
@@ -20,7 +32,7 @@ function createHost({ launcher: launcherOptions, ...hostOptions } = {}) {
     timers,
     initialize: () => ({
       apiVersion: '1.90.0',
-      extensions: ['acme.demo'],
+      extensions: [DEMO_DESCRIPTOR],
       workspace: '/w',
       trust: true,
     }),
@@ -56,7 +68,7 @@ test('start forks a generation, completes the handshake and reports running', as
   assert.deepEqual(handshake.payload, {
     protocol: 1,
     apiVersion: '1.90.0',
-    extensions: ['acme.demo'],
+    extensions: [DEMO_DESCRIPTOR],
     workspace: '/w',
     trust: true,
   });
@@ -361,7 +373,7 @@ test('a subscriber that throws does not break the state machine', async () => {
 
 // ── Bootstrap responder (in-process contract) ───────────────────────────
 
-test('the bootstrap responder answers only what milestone 3.1 implements', () => {
+test('the bootstrap responder answers lifecycle and refuses the rest', async () => {
   const exits = [];
   let clock = 0;
   const respond = createBootstrapResponder({
@@ -373,32 +385,223 @@ test('the bootstrap responder answers only what milestone 3.1 implements', () =>
   const request = (method, payload, id = 1) =>
     respond({ v: 1, gen: 4, id, kind: 'request', method, payload });
 
-  const early = request('lifecycle.heartbeat', {});
+  const early = await request('lifecycle.heartbeat', {});
   assert.equal(early.kind, 'error');
   assert.equal(early.payload.code, 'HOST_UNAVAILABLE', 'no beats before the handshake');
 
-  const handshake = request('lifecycle.initialize', { protocol: 1 });
-  assert.deepEqual(handshake.payload, { protocol: 1, nodeVersion: '20.11.0', ready: true });
+  const handshake = await request('lifecycle.initialize', { protocol: 1 });
+  assert.deepEqual(handshake.payload, {
+    protocol: 1,
+    nodeVersion: '20.11.0',
+    ready: true,
+    loadable: [],
+  });
   assert.equal(handshake.gen, 4, 'the generation is echoed, never invented');
   assert.equal(handshake.id, 1, 'the response repeats the request id');
 
   clock = 250;
-  assert.deepEqual(request('lifecycle.heartbeat', {}, 2).payload, { ok: true, uptimeMs: 250 });
+  assert.deepEqual((await request('lifecycle.heartbeat', {}, 2)).payload, {
+    ok: true,
+    uptimeMs: 250,
+  });
 
-  const unsupported = request('commands.execute', {}, 3);
+  const unsupported = await request('commands.execute', {}, 3);
   assert.equal(unsupported.payload.code, 'UNSUPPORTED_API');
 
-  const mismatch = request('lifecycle.initialize', { protocol: 2 }, 4);
+  const mismatch = await request('lifecycle.initialize', { protocol: 2 }, 4);
   assert.equal(mismatch.payload.code, 'HOST_UNAVAILABLE');
 
-  assert.equal(respond({ nonsense: true }), null, 'garbage is ignored, not answered');
+  assert.equal(await respond({ nonsense: true }), null, 'garbage is ignored, not answered');
   assert.equal(
-    respond({ v: 1, gen: 4, id: 0, kind: 'event', method: 'lifecycle.heartbeat', payload: {} }),
+    await respond({ v: 1, gen: 4, id: 0, kind: 'event', method: 'lifecycle.heartbeat', payload: {} }),
     null,
     'notifications get no answer',
   );
 
-  const shutdown = request('lifecycle.shutdown', {}, 5);
+  const shutdown = await request('lifecycle.shutdown', {}, 5);
   assert.deepEqual(shutdown.payload, { ok: true });
   assert.deepEqual(exits, [0], 'the process exits after answering, not before');
+});
+
+// ── Bootstrap with real extensions (increment 3.2) ──────────────────────
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const {
+  ExtensionRuntime,
+} = require('../../dist-electron/extension-host/extension-runtime.js');
+
+const HOST_FIXTURES = path.join(__dirname, '..', 'fixtures', 'extensions', 'host');
+
+function hostDescriptor(name) {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(HOST_FIXTURES, name, 'package.json'), 'utf8'),
+  );
+  return {
+    id: `forge-tests.${name}`,
+    version: '1.0.0',
+    dir: path.join(HOST_FIXTURES, name),
+    main: manifest.main ?? null,
+    globalStoragePath: path.join(os.tmpdir(), 'forge-host-protocol', name),
+    workspaceStoragePath: null,
+    extensionMode: 'test',
+  };
+}
+
+/** Responder wired to a runtime that loads the fixtures for real, with a
+ *  fresh `require` cache so protocol tests do not see runtime tests' state. */
+function createLoadingResponder() {
+  const notifications = [];
+  const warnings = [];
+  let clock = 0;
+  const respond = createBootstrapResponder({
+    now: () => (clock += 1),
+    nodeVersion: '20.11.0',
+    exit: () => {},
+    warn: (message) => warnings.push(message),
+    notify: (envelope) => notifications.push(envelope),
+    createRuntime: (input) => new ExtensionRuntime({
+      apiVersion: input.apiVersion,
+      workspacePath: input.workspacePath,
+      moduleSystem: require('node:module'),
+      loadModule: (entryPoint) => {
+        delete require.cache[require.resolve(entryPoint)];
+        return require(entryPoint);
+      },
+      entryPointDeps: {
+        realpath: (target) => {
+          try {
+            return fs.realpathSync(target);
+          } catch {
+            return path.resolve(target);
+          }
+        },
+        isFile: (target) => {
+          try {
+            return fs.statSync(target).isFile();
+          } catch {
+            return false;
+          }
+        },
+      },
+      mementoStore: { read: () => ({}), write: () => undefined },
+      joinPath: (...segments) => path.join(...segments),
+      now: input.now,
+      log: input.log,
+      reportUnsupportedApi: input.reportUnsupportedApi,
+    }),
+  });
+
+  let nextId = 1;
+  return {
+    notifications,
+    warnings,
+    request: (method, payload) => respond({
+      v: 1,
+      gen: 7,
+      id: nextId++,
+      kind: 'request',
+      method,
+      payload,
+    }),
+  };
+}
+
+test('the handshake carries descriptors and activate loads real extension code', async () => {
+  const host = createLoadingResponder();
+
+  const handshake = await host.request('lifecycle.initialize', {
+    protocol: 1,
+    apiVersion: '1.90.0',
+    extensions: [hostDescriptor('healthy'), 'acme.legacy-string'],
+    workspace: '/w',
+  });
+
+  assert.deepEqual(
+    handshake.payload.loadable,
+    ['forge-tests.healthy'],
+    'an invalid descriptor is dropped at the edge, never guessed at',
+  );
+  assert.equal(
+    host.warnings.some((message) => message.includes('descriptor de extensión inválido')),
+    true,
+  );
+
+  const activated = await host.request('lifecycle.activate', { id: 'forge-tests.healthy' });
+  assert.equal(activated.kind, 'response');
+  assert.equal(activated.payload.status, 'active');
+  assert.equal(activated.gen, 7, 'the generation is echoed on async answers too');
+
+  const deactivated = await host.request('lifecycle.deactivate', { id: 'forge-tests.healthy' });
+  assert.deepEqual(deactivated.payload, { id: 'forge-tests.healthy', status: 'inactive' });
+});
+
+test('a failing activation answers a typed error and logs it as a notification', async () => {
+  const host = createLoadingResponder();
+  await host.request('lifecycle.initialize', {
+    protocol: 1,
+    apiVersion: '1.90.0',
+    extensions: [hostDescriptor('throwing'), hostDescriptor('unsupported')],
+    workspace: null,
+  });
+
+  const failed = await host.request('lifecycle.activate', { id: 'forge-tests.throwing' });
+  assert.equal(failed.kind, 'error');
+  assert.equal(failed.payload.code, 'ACTIVATION_FAILED');
+  assert.equal(failed.payload.stack, undefined, 'the stack never crosses the wire');
+  assert.equal(
+    host.notifications.some(
+      (envelope) => envelope.method === 'diagnostics.log' && envelope.payload.level === 'error',
+    ),
+    true,
+  );
+
+  await host.request('lifecycle.activate', { id: 'forge-tests.unsupported' });
+  const reported = host.notifications.find(
+    (envelope) => envelope.method === 'diagnostics.unsupportedApi',
+  );
+  assert.deepEqual(reported.payload, {
+    api: 'commands.registerCommand',
+    extensionId: 'forge-tests.unsupported',
+  });
+  assert.equal(reported.id, 0, 'notifications carry no correlation id');
+});
+
+test('activate before the handshake, or with a bad payload, is refused typed', async () => {
+  const host = createLoadingResponder();
+
+  const early = await host.request('lifecycle.activate', { id: 'forge-tests.healthy' });
+  assert.equal(early.payload.code, 'HOST_UNAVAILABLE');
+
+  await host.request('lifecycle.initialize', {
+    protocol: 1,
+    apiVersion: '1.90.0',
+    extensions: [hostDescriptor('healthy')],
+    workspace: null,
+  });
+
+  const malformed = await host.request('lifecycle.activate', { name: 'healthy' });
+  assert.equal(malformed.payload.code, 'INVALID_PAYLOAD');
+
+  const unknown = await host.request('lifecycle.activate', { id: 'acme.nope' });
+  assert.equal(unknown.payload.code, 'INVALID_PAYLOAD');
+  assert.match(unknown.payload.message, /no forma parte de esta generación/);
+});
+
+test('shutdown deactivates what is active before answering', async () => {
+  const host = createLoadingResponder();
+  await host.request('lifecycle.initialize', {
+    protocol: 1,
+    apiVersion: '1.90.0',
+    extensions: [hostDescriptor('healthy')],
+    workspace: null,
+  });
+  await host.request('lifecycle.activate', { id: 'forge-tests.healthy' });
+
+  const shutdown = await host.request('lifecycle.shutdown', {});
+
+  assert.deepEqual(shutdown.payload, { ok: true });
+  const loaded = require(path.join(HOST_FIXTURES, 'healthy', 'out', 'extension.js'));
+  assert.equal(loaded.trace.includes('deactivate'), true, 'the extension got its deactivate()');
 });

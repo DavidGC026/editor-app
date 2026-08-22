@@ -8,7 +8,7 @@ Este documento mantiene un registro de los esfuerzos de modularización y refact
 Se extrajo la lógica pesada de los paneles de la barra lateral hacia componentes independientes dentro de `src/components/Sidebar/`:
 - **`SearchPanel.tsx`**: Funcionalidad de búsqueda en todo el proyecto.
 - **`AgentsPanel.tsx`**: Integración con agentes IA.
-- **`RunDebugPanel.tsx`**: Gestión de comandos de terminal, scripts de NPM y depuración.
+- **`RunDebugPanel.tsx`**: Comandos de terminal y scripts de `package.json`. No hay debugger.
 - **`SourceControlPanel.tsx`**: Funcionalidad completa de Git, visualización de cambios y modal de GitHub OAuth.
 - **`ExplorerPanel.tsx`**: Árbol de archivos, menús contextuales, arrastrar y soltar, sub-secciones Outline y Timeline.
 - **`gitHelpers.ts`** (en `src/utils/`): Se extrajeron funciones repetidas de Git (`gitStatusLabel`, `isStaged`, etc.) para uso compartido.
@@ -16,17 +16,25 @@ Se extrajo la lógica pesada de los paneles de la barra lateral hacia componente
 > **Resultado:** `SideBar.tsx` se redujo de ~2,600 líneas a apenas 106 líneas, siendo responsable únicamente de la orquestación y renderizado condicional de sus paneles.
 
 ### 2. Refactorización de `store.ts` (En Progreso)
-El archivo principal de estado global (`store.ts`) creció desmesuradamente a ~2,600 líneas. Se ha comenzado a dividir usando el patrón "Slices" de Zustand en la carpeta `src/store/slices/`.
+El archivo principal de estado global (`store.ts`) sigue en ~1 750 líneas
+(bajó de ~2 600). Las slices viven en `src/store/slices/`.
 
-- **`layoutSlice.ts`**: Creado. Maneja todo el estado visual de la interfaz (visibilidad del sidebar, anchos de paneles, panel activo, persistencia de preferencias de layout, etc.).
+- **`layoutSlice.ts`**: visibilidad, anchos, panel activo, persistencia de layout.
+- **`remoteSlice.ts`**: modal SSH y `connectRemoteWorkspace`.
 
 ## Próximos Pasos (To-Do)
-- [ ] Extraer `editorSlice.ts` (Manejo de archivos abiertos, pestañas, guardado, fuente, etc.).
-- [x] Extraer `gitSlice.ts` (Ramas, cambios en staging, árbol de commits).
-- [x] Extraer `terminalSlice.ts` (Manejo de PTY, sesiones de terminales nativas y de agentes).
-- [ ] Extraer `aiSlice.ts` (Mensajes de chat, configuración de proveedores, status del modelo).
-- [x] Extraer `extensionSlice.ts` (Extensiones instaladas, tema activo, búsqueda/instalación desde Open VSX).
-- [ ] Construir un pequeño `store/index.ts` unificado usando el combinador de slices de Zustand.
+- [ ] Extraer `editorSlice.ts` (archivos abiertos, pestañas, guardado, fuente).
+- [x] Extraer `gitSlice.ts` (ramas, staging, log).
+- [x] Extraer `terminalSlice.ts` (PTY, sesiones nativas y de agentes).
+- [x] Extraer `remoteSlice.ts` (modal y conexión SSH).
+- [ ] Extraer `aiSlice.ts` (chat, proveedores, modelo activo).
+- [x] Extraer `extensionSlice.ts` (inventario, tema, Open VSX, trust, host).
+- [ ] Construir un `store/index.ts` unificado con el combinador de slices.
+
+Monolitos fuera del store que siguen por encima de la guía (300–400
+líneas): `electron/main.ts`, `ExplorerPanel.tsx`, `EditorArea.tsx`,
+`src/types.ts`, `App.tsx`. El mapa está en
+[app-architecture.md](./app-architecture.md).
 
 ## Progreso Reciente
 - **Plataforma de extensiones**: Se documentó la arquitectura objetivo SOLID,
@@ -160,6 +168,23 @@ El archivo principal de estado global (`store.ts`) creció desmesuradamente a ~2
   inyectados) y el puerto `ExtensionHost` es implementable por un doble en
   proceso. Todavía no carga código de extensión.
   Ver [extensions-phase3-progress.md](./extensions-phase3-progress.md).
+- **Extensiones Milestone 3.2**: el host ya carga código de extensión —
+  descriptores en el handshake, resolución del entrypoint contenida por
+  realpath (symlinks incluidos), `require('vscode')` interceptado y resuelto
+  por dueño, primitivas (`Disposable`, `EventEmitter`, `Uri`, cancelación),
+  enums congelados, `ExtensionContext` con mementos persistidos por
+  extensión y activación aislada: la que lanza queda `failed`, libera lo que
+  registró y no arrastra a las demás. Toda API sin implementar lanza
+  `UnsupportedApiError` y se reporta, en vez de devolver `undefined`.
+  Ver [extensions-phase3-progress.md](./extensions-phase3-progress.md).
 
 Actualmente `store.ts` ha delegado Layout, Terminal, Git, Remote y Extensiones a
-slices específicos.
+slices específicos. Siguen inline: workspace, tabs, editor, IA, Live Server,
+problems, command palette y Quick Open.
+
+Documentación de producto añadida en 2026-08-22: README de raíz,
+[app-architecture.md](./app-architecture.md),
+[ai-and-agents.md](./ai-and-agents.md), [git-and-scm.md](./git-and-scm.md),
+[lsp.md](./lsp.md) y [remote-workspaces.md](./remote-workspaces.md). La
+matriz, el “estado actual” de la arquitectura y el próximo incremento
+del roadmap se alinearon con el código (M0 cerrado, siguiente corte 3.2).

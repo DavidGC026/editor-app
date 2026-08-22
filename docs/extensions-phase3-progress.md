@@ -1,6 +1,6 @@
 # Extensiones: progreso del Milestone 3 (kernel del Extension Host)
 
-Última actualización: 2026-08-15
+Última actualización: 2026-08-22
 
 Diseño: [extensions-phase3-design.md](./extensions-phase3-design.md) · Milestone
 anterior: [extensions-phase2-progress.md](./extensions-phase2-progress.md)
@@ -175,9 +175,143 @@ esto lo enchufa a Forge sin cargar todavía código de extensión.
   validan los `engines.vscode`) como `apiVersion` del handshake, en vez de
   declarar una segunda versión emulada que podría divergir.
 
+## Incremento 3.2 — loader, `require('vscode')`, `ExtensionContext` y primitivas
+
+Completado (2026-08-22). Criterio de salida del diseño §8: *«Una extensión
+fixture carga y expone `activate` sin ejecutar lógica de workbench»*. **Este
+incremento ejecuta código de terceros por primera vez**, y sólo eso: las
+familias `commands`, `window` y `configuration` siguen respondiendo
+`UNSUPPORTED_API`, ahora de forma tipada y medida en vez de por omisión.
+
+- **Descriptores en el cable** (`domain/rpc-protocol.ts`): el handshake pasa
+  de `extensions: string[]` a `ExtensionHostDescriptor[]` con
+  `{ id, version, dir, main, globalStoragePath, workspaceStoragePath,
+  extensionMode }`, más `storageRoot` en el payload. El host recibe **sólo**
+  lo que el loader necesita: las contribuciones se quedan en main. El guard
+  `isExtensionHostDescriptor` valida en el borde y un descriptor inválido se
+  descarta con aviso, nunca se completa a ojo.
+- **Resolución del entrypoint** (`extension-host/module-loader.ts`): `main`
+  se resuelve contra el directorio instalado y la contención se comprueba
+  sobre el **realpath** de ambos extremos, así que un symlink que apunta
+  fuera del store se rechaza igual que un `../../..`. El escape se distingue
+  de la ausencia (`outside-extension` vs `not-found`): reportar un ataque
+  como «archivo no encontrado» lo escondería. El orden de candidatos imita
+  al de Node (exacto, `.js`, `.cjs`, `.json`, `index.*`), de modo que nada
+  resuelve aquí que `require` fuese a rechazar después.
+- **`require('vscode')` por dueño**: `createOwnerIndex` atribuye cada archivo
+  a su extensión por prefijo de directorio (gana el más largo, así una
+  instalación anidada no la absorbe su padre) y el hook sobre `Module._load`
+  devuelve la facade **de quien hace el require**, no un singleton. Código
+  sin dueño recibe un throw explícito: entregarle una facade atribuiría sus
+  disposables y su storage a la primera extensión que pasara por ahí. Sin
+  extensiones activables el hook ni se instala.
+- **Primitivas** (`vscode-api/primitives.ts`): `Disposable` (idempotente,
+  con `from` que libera a todos aunque uno lance), `EventEmitter` (snapshot
+  al emitir, listener que lanza reportado y no propagado), `Uri` (inmutable,
+  `file`/`parse`/`joinPath`/`with`, minúsculas en la letra de unidad de
+  Windows para que dos grafías comparen igual, `toJSON` que sobrevive al
+  structured clone) y `CancellationTokenSource` con token desacoplado de su
+  fuente.
+- **Enums** (`vscode-api/enums.ts`): objetos congelados, no `enum` de
+  TypeScript, porque estos módulos también se cargan por type stripping.
+  Sólo están los enums cuya API existe o se lee antes de existir; los de
+  debug, notebooks y tests se omiten a propósito — un valor sin su API es
+  una trampa.
+- **API no soportada** (`vscode-api/unsupported.ts`): cada namespace es un
+  Proxy cuyos miembros son funciones que **lanzan** `UnsupportedApiError` al
+  llamarse y se reportan por `diagnostics.unsupportedApi`. Se reporta en la
+  llamada, no en el acceso, para que `typeof api.foo === 'function'` siga
+  funcionando; `then`, `Symbol.toPrimitive` y compañía devuelven `undefined`
+  para que un `await` o un `console.log` no se cuenten como uso.
+- **`ExtensionContext`** (`extension-context.ts`): `subscriptions`,
+  `extensionPath`/`extensionUri`, `extensionMode`, `asAbsolutePath`,
+  `extension.id` y los dos mementos. El storage se persiste por extensión a
+  través de un puerto `MementoStore`; el adaptador de fs escribe
+  `tmp`+`rename` y las rutas las decide main con el id saneado. Sin
+  workspace no hay storage de workspace (queda en memoria) y `storagePath`
+  es `undefined`, no `null`, porque es sobre eso que ramifican las
+  extensiones. Un storage corrupto lee vacío: perder estado se recupera, no
+  poder activar no.
+- **`ExtensionRuntime`** (`extension-runtime.ts`): activación una vez por
+  generación con promesa compartida entre llamadas concurrentes, contexto
+  construido **antes** de cargar el módulo (una extensión puede requerir
+  `vscode` en tiempo de import), `activate` síncrono o asíncrono, y fallo
+  aislado — la extensión queda `failed`, sus disposables se liberan y el
+  resto de la generación sigue intacta. `deactivate()` corre siempre antes
+  del dispose, y su excepción no impide liberar lo registrado. `shutdown`
+  desactiva todo y desengancha el hook.
+- **Bootstrap**: `lifecycle.activate` / `lifecycle.deactivate` reales, el
+  responder pasa a poder contestar de forma asíncrona (activar ejecuta
+  código ajeno) y ninguna excepción escapa al bombeo de mensajes: todo sale
+  como envelope de error tipado, porque una excepción suelta parecería un
+  cuelgue a main y gastaría presupuesto de heartbeat.
+- **Composition root**: `activatableDescriptors()` traduce el registro a
+  descriptores y deriva las rutas de storage bajo `userData/extension-storage`
+  — nunca dentro del directorio de instalación, que una actualización
+  reemplaza entero.
+
+Pruebas añadidas (48 casos nuevos; la suite pasa de 168 a 216 tests):
+
+- `tests/extensions/vscode-api.test.cjs` (21): idempotencia y agregación de
+  `Disposable`, alta/baja de listeners y aislamiento de excepciones,
+  cancelación, `Uri` (posix, unidad de Windows, `parse`, `joinPath`,
+  serialización), API no soportada (detección de características sin
+  reportar, throw tipado al llamar, miembros implementados que la sombrean),
+  facade (primitivas, enums congelados, `env`, typo que sigue `undefined`) y
+  `ExtensionContext` (rutas, ausencia de workspace, mementos, storage
+  corrupto, dispose LIFO tolerante a fallos, saneo de la clave de storage).
+- `tests/extensions/extension-runtime.test.cjs` (23): resolución del
+  entrypoint (dentro, absoluto, symlink que escapa, inexistente, sin `main`,
+  sin extensión), índice de dueños, hook que sólo intercepta `vscode` y se
+  desinstala limpio, y el ciclo completo contra fixtures reales — activación
+  sana con su facade, activación concurrente que ejecuta `activate` una vez,
+  extensión que lanza y libera lo registrado sin arrastrar a las demás,
+  extensión fallida que no reintenta, API no soportada reportada, `main` sin
+  `activate`, entrypoint que escapa, id fuera de la generación, `deactivate`
+  idempotente y adaptador de storage.
+- `tests/extensions/extension-host.test.cjs` (+4): el protocolo de punta a
+  punta con extensiones reales — handshake con descriptores (uno inválido
+  descartado), `activate`/`deactivate` por envelope, error tipado sin stack
+  con su `diagnostics.log`, `diagnostics.unsupportedApi` con `id: 0`,
+  peticiones antes del handshake o con payload malformado, y `shutdown` que
+  desactiva antes de contestar.
+- `tests/fixtures/extensions/host/`: cinco extensiones fixture (`healthy`,
+  `throwing`, `unsupported`, `silent`, `escaping`), en el repo y sin red.
+
+### Decisiones del incremento 3.2
+
+- **El descriptor viaja por el cable, no el registro entero.** El host no
+  necesita saber qué temas o menús aporta una extensión para cargarla, y
+  cuanto menos cruce el proceso, menos superficie tiene lo que corre código
+  ajeno.
+- **La contención se comprueba sobre el realpath, no sobre la cadena.**
+  `path.resolve` no sigue symlinks; `require` sí. Comparar sólo las cadenas
+  habría dejado abierto exactamente el agujero que el 3.0 cerró en la
+  instalación.
+- **Una facade por extensión, memoizada.** Dos `require('vscode')` desde la
+  misma extensión deben devolver el mismo objeto: la identidad detrás de los
+  disposables y del storage no puede cambiar a mitad de una activación.
+- **La API no soportada lanza en la llamada, no en el acceso.** Reportar en
+  el acceso convertiría cualquier feature detection en un falso positivo del
+  reporte de compatibilidad, que es justo lo que este mecanismo existe para
+  medir bien.
+- **El contexto se construye antes de cargar el módulo.** Muchas extensiones
+  requieren `vscode` en tiempo de import; si la facade no existiera todavía,
+  el hook tendría que inventar un dueño o fallar.
+- **Un fallo de activación libera lo ya registrado.** Una extensión a medio
+  activar con disposables vivos es peor que una fallida: nadie los va a
+  liberar después, porque nadie la considera activa.
+- **El responder puede contestar asíncronamente, pero nunca lanzar.** El
+  bombeo de mensajes es el único punto donde una excepción se traduciría en
+  silencio, y el silencio es indistinguible de un host colgado.
+- **Sin extensiones activables no se toca `Module._load`.** Parchear el
+  sistema de módulos cuando no hay nada que cargar sólo añade una capa que
+  puede fallar; el host arranca igual de vacío.
+
 ## Próximo incremento
 
-3.2 — loader, `require('vscode')`, `ExtensionContext` y primitivas. El seam
-está listo: `onRequest` del host ya recibe las peticiones host→main y hoy
-responde `UNSUPPORTED_API`, que es el hueco exacto donde entran
-`commands.register` y compañía.
+3.3 — `commands.register` / `commands.execute` de punta a punta y activación
+`onCommand` desde el seam del renderer. El hueco está preparado: los
+namespaces del facade aceptan miembros implementados que sombrean el default
+que lanza, y `commands.register` es host→main, la primera dirección inversa
+que el broker todavía no enruta a un handler real.

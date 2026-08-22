@@ -1,4 +1,11 @@
-import type { RpcEnvelope, RpcErrorCode, RpcLogEntry } from '../../domain/rpc-protocol';
+import type {
+  ExtensionHostDescriptor,
+  RpcEnvelope,
+  RpcErrorCode,
+  RpcLogEntry,
+} from '../../domain/rpc-protocol';
+
+export type { ExtensionHostDescriptor };
 
 /**
  * What the use cases need from an Extension Host, and nothing else. Both the
@@ -35,7 +42,9 @@ export interface ExtensionHostInitializePayload {
   protocol: number;
   /** VS Code API version Forge emulates. */
   apiVersion: string;
-  extensions: string[];
+  /** Everything this generation is allowed to load. An extension missing
+   *  from the list cannot be activated at all — that is the trust boundary. */
+  extensions: ExtensionHostDescriptor[];
   workspace: string | null;
   trust: boolean;
 }
@@ -45,6 +54,16 @@ export interface ExtensionHostHandshake {
   protocol: number;
   nodeVersion: string;
   ready: boolean;
+  /** Descriptors the host accepted; a rejected one never appears here. */
+  loadable?: string[];
+}
+
+/** Result of `lifecycle.activate` for one extension. */
+export interface ExtensionActivationReport {
+  id: string;
+  status: 'inactive' | 'activating' | 'active' | 'failed';
+  durationMs: number;
+  exports: string[];
 }
 
 export type ExtensionHostEvent =

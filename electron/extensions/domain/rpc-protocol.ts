@@ -122,6 +122,43 @@ export function methodFamily(method: string): string {
   return separator === -1 ? method : method.slice(0, separator);
 }
 
+/**
+ * What main tells the host about one extension it may load (design §4).
+ * Only what the loader needs: the identity, where it lives and the raw
+ * `main` from the manifest. Contributions stay on the main side — the host
+ * has no business knowing about themes or menus.
+ */
+export interface ExtensionHostDescriptor {
+  id: string;
+  version: string;
+  /** Absolute install directory. The entrypoint may not resolve outside it. */
+  dir: string;
+  /** Raw `main` from the manifest; `null` for purely declarative extensions. */
+  main: string | null;
+  /** Sanitised per-extension storage roots, decided by main (security §7). */
+  globalStoragePath: string;
+  workspaceStoragePath: string | null;
+  /** `production` in a packaged app, `development` when running from source. */
+  extensionMode: 'production' | 'development' | 'test';
+}
+
+export function isExtensionHostDescriptor(value: unknown): value is ExtensionHostDescriptor {
+  if (value === null || typeof value !== 'object') return false;
+  const descriptor = value as Partial<ExtensionHostDescriptor>;
+  return (
+    typeof descriptor.id === 'string' && descriptor.id !== ''
+    && typeof descriptor.version === 'string'
+    && typeof descriptor.dir === 'string' && descriptor.dir !== ''
+    && (descriptor.main === null || typeof descriptor.main === 'string')
+    && typeof descriptor.globalStoragePath === 'string'
+    && (descriptor.workspaceStoragePath === null
+      || typeof descriptor.workspaceStoragePath === 'string')
+    && (descriptor.extensionMode === 'production'
+      || descriptor.extensionMode === 'development'
+      || descriptor.extensionMode === 'test')
+  );
+}
+
 export type RpcLogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 /** One aggregated `diagnostics.log` line (design §3.4). */

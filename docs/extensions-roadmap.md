@@ -20,7 +20,7 @@ Matriz normativa: [extensions-compatibility.md](./extensions-compatibility.md)
 
 Objetivo: volver medible el sistema actual antes de refactorizarlo.
 
-Estado: **en progreso**. Incrementos 0.1 y 0.2 completaron manifest reader,
+Estado: **completado**. Incrementos 0.1 y 0.2 completaron manifest reader,
 fixtures JSONC/VSIX, registry desacoplado, migración legacy y DTO IPC v1. El
 incremento 0.3 separó contribution readers, aseguró sus rutas y centralizó el
 análisis básico de compatibilidad. El incremento 0.4 añadió el reporte tipado
@@ -28,7 +28,9 @@ de compatibilidad (nivel + blockers) consumido por la UI, extrajo
 `extensionSlice` del store monolítico e inició la validación de manifest con
 errores discriminados en modo legacy. El incremento 0.5 aplicó el icon theme
 activo en el Explorer con persistencia completa y promovió `iconThemes` a
-contribución soportada.
+contribución soportada. Lo que quedó de `any` en preload no es de `ext:*`
+(ese handshake está tipado); vive en `lsp` / `ai` / `claudeIde` y no
+bloquea este milestone.
 
 Trabajo:
 
@@ -325,13 +327,13 @@ Criterios de salida:
 
 ## Primer incremento recomendado
 
-El próximo cambio de código debe ser Milestone 0, slice 1:
+El próximo cambio de código es el **incremento 3.3**: `commands.register`
+y `commands.execute` de punta a punta, más activación `onCommand` desde el
+seam del renderer. El 3.2 dejó el loader, la facade por extensión y el
+`ExtensionContext`; los namespaces ya aceptan miembros implementados que
+sombrean el default que lanza `UnsupportedApiError`.
 
-1. Crear fixtures y pruebas de caracterización del manifest/install/list.
-2. Extraer contratos del dominio y DTO IPC sin modificar comportamiento.
-3. Extraer `ManifestReader` y `ExtensionRegistry` detrás de interfaces.
-4. Mantener `electron/extensions.ts` como facade temporal.
-5. Ejecutar build y las mismas pruebas antes y después.
-
-Este corte reduce riesgo, habilita SOLID y evita empezar por el Extension Host
-sobre cimientos que todavía no son transaccionales ni comprobables.
+Diseño: [extensions-phase3-design.md](./extensions-phase3-design.md).
+Progreso del kernel: [extensions-phase3-progress.md](./extensions-phase3-progress.md).
+No se carga código de terceros hasta cerrar el resto del gate en
+[extensions-security-and-testing.md](./extensions-security-and-testing.md).
