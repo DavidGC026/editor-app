@@ -54,6 +54,10 @@ import {
   onExtensionHostEvent,
   getExtensionCommandRegistry,
   executeExtensionCommand,
+  getExtensionActivationReport,
+  fireExtensionActivation,
+  fireWorkspaceContainsActivation,
+  resolveExtensionMessage,
 } from './extensions';
 import { RpcError } from './extensions/domain/rpc-protocol';
 import {
@@ -2050,6 +2054,24 @@ ipcMain.handle('ext:host:restart', async () => restartExtensionHost());
 
 ipcMain.handle('ext:host:commands', async () => getExtensionCommandRegistry());
 
+ipcMain.handle('ext:host:activation', async () => getExtensionActivationReport());
+
+// The user answered (or dismissed) an extension's message. `send`, not
+// `invoke`: the renderer has nothing to wait for, and the host's promise is
+// resolved on this side.
+ipcMain.on('ext:host:message:respond', (_event, id: number, selection: string | null) => {
+  if (typeof id !== 'number') return;
+  resolveExtensionMessage(id, typeof selection === 'string' ? selection : null);
+});
+
+// `onLanguage:` is a workbench fact — which language the user is looking at
+// — so the renderer reports it and main decides who that wakes up. Fire and
+// forget: opening a file must not wait on an extension, nor fail with it.
+ipcMain.on('ext:activate:language', (_event, language: string) => {
+  if (typeof language !== 'string' || !language) return;
+  void fireExtensionActivation({ kind: 'language', language });
+});
+
 // Extension commands run in the host, but the renderer is what triggers
 // them (palette, keybinding, menu). The error is flattened to a typed body
 // so it survives the IPC boundary as data instead of a rejected invoke the
@@ -2186,7 +2208,13 @@ app.whenReady().then(async () => {
   sweepExtensionStore();
   // Non-blocking on purpose: a host that will not come up must not delay or
   // prevent the window. It reports its state through `ext:host:event`.
-  void startExtensionHost();
+  void startExtensionHost().then(() => {
+    // Both triggers fire after the window exists, which is what
+    // `onStartupFinished` means: not "as early as possible" but "once the
+    // user has a workbench to see the result in".
+    void fireExtensionActivation({ kind: 'startupFinished' });
+    void fireWorkspaceContainsActivation();
+  });
   createWindow();
 });
 

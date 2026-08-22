@@ -34,6 +34,22 @@ export type ExtensionCommandResult =
   | { ok: true; result: unknown }
   | { ok: false; error: { code: string; message: string } };
 
+/** A message an extension asked Forge to show. `items` are buttons; the
+ *  renderer answers with the chosen one, or null when dismissed. */
+export interface ExtensionHostMessage {
+  id: number;
+  severity: 'info' | 'warn' | 'error';
+  message: string;
+  items: string[];
+  extensionId: string | null;
+}
+
+/** What activated, how long it took and what failed, for the host UI. */
+export interface ExtensionActivationReport {
+  metrics: { id: string; reason: string; durationMs: number; at: number }[];
+  failures: { id: string; reason: string; code: string; message: string; at: number }[];
+}
+
 export interface FsChangeEvent {
   reason: 'add' | 'unlink' | 'addDir' | 'unlinkDir' | 'change' | string;
   path: string;
@@ -268,6 +284,19 @@ export interface ElectronAPI {
     ) => { dispose: () => void };
     /** Runs an extension command, activating its owner on demand. */
     executeCommand: (command: string, args?: unknown[]) => Promise<ExtensionCommandResult>;
+    /** Activation timings and failures of the live generation. */
+    activationReport: () => Promise<ExtensionActivationReport>;
+    onActivationChanged: (
+      callback: (report: ExtensionActivationReport) => void,
+    ) => { dispose: () => void };
+    /** Reports the language the user is looking at, for `onLanguage:`. */
+    notifyLanguage: (language: string) => void;
+    /** Messages extensions ask Forge to show (`window.show*Message`). */
+    onHostMessage: (
+      callback: (message: ExtensionHostMessage) => void,
+    ) => { dispose: () => void };
+    /** Answers one, with the picked item or null when dismissed. */
+    respondHostMessage: (id: number, selection: string | null) => void;
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
   };
@@ -644,6 +673,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     executeCommand: (command: string, args: unknown[] = []) =>
       ipcRenderer.invoke('ext:command:execute', command, args),
+    activationReport: () => ipcRenderer.invoke('ext:host:activation'),
+    onActivationChanged: (callback: (report: ExtensionActivationReport) => void) => {
+      const handler = (_event: unknown, payload: ExtensionActivationReport) => {
+        try {
+          callback(payload);
+        } catch (err) {
+          console.error('[forge] onActivationChanged callback error:', err);
+        }
+      };
+      ipcRenderer.on('ext:host:activation', handler);
+      return {
+        dispose: () => ipcRenderer.removeListener('ext:host:activation', handler),
+      };
+    },
+    // Fire-and-forget: `send`, not `invoke`. Opening a file must not wait
+    // on an extension activating, nor fail when one does.
+    notifyLanguage: (language: string) => ipcRenderer.send('ext:activate:language', language),
+    onHostMessage: (callback: (message: ExtensionHostMessage) => void) => {
+      const handler = (_event: unknown, payload: ExtensionHostMessage) => {
+        try {
+          callback(payload);
+        } catch (err) {
+          console.error('[forge] onHostMessage callback error:', err);
+        }
+      };
+      ipcRenderer.on('ext:host:message', handler);
+      return {
+        dispose: () => ipcRenderer.removeListener('ext:host:message', handler),
+      };
+    },
+    respondHostMessage: (id: number, selection: string | null) =>
+      ipcRenderer.send('ext:host:message:respond', id, selection),
     trustStatus: () => ipcRenderer.invoke('ext:trust:status'),
     grantWorkspaceTrust: () => ipcRenderer.invoke('ext:trust:grant'),
     revokeWorkspaceTrust: () => ipcRenderer.invoke('ext:trust:revoke'),

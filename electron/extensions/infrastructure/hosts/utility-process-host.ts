@@ -227,6 +227,7 @@ export class UtilityProcessExtensionHost implements ExtensionHost {
       extensions: [],
       workspace: null,
       trust: false,
+      configuration: {},
     };
   }
 

@@ -12,9 +12,12 @@
  *    swallowing a keystroke it cannot honour.
  * 2. **On-demand activation.** A command with no handler is not
  *    necessarily missing: its extension may simply not be activated yet.
- *    The dispatcher looks for who declares `onCommand:<id>`, activates it
- *    and retries **once** (design §5). Retrying more would turn a
- *    misdeclared activation event into an infinite loop.
+ *    The dispatcher asks the activation service who declares
+ *    `onCommand:<id>`, has it activated and retries **once** (design §5).
+ *    Retrying more would turn a misdeclared activation event into an
+ *    infinite loop. The index and the per-extension activation state live
+ *    in that service, not here: `onCommand` is one trigger among several
+ *    and they must not disagree about who is active.
  *
  * The registry is per generation. A host restart drops it wholesale — a
  * registration is a fact about a process that no longer exists, and
@@ -23,32 +26,22 @@
 import { RpcError } from '../domain/rpc-protocol';
 import type { RpcEnvelope } from '../domain/rpc-protocol';
 import type { ExtensionHost, ExtensionHostEvent } from './ports/extension-host';
+import type { ExtensionActivationService } from './extension-activation-service';
 
 export interface CommandRegistration {
   command: string;
   extensionId: string;
 }
 
-/** What the dispatcher needs to know about an installed extension to decide
- *  who should be woken up for a command. */
-export interface ActivatableExtension {
-  id: string;
-  activationEvents: string[];
-}
-
 export interface ExtensionCommandDispatcherOptions {
-  /** Only `request` and `state` are used: the dispatcher does not own the
-   *  host's lifecycle, it just talks to it. */
-  host: Pick<ExtensionHost, 'request' | 'state'>;
-  /** Extensions this generation may activate, with their activation events. */
-  activatable: () => ActivatableExtension[];
+  /** Only `request` is used here: the dispatcher does not own the host's
+   *  lifecycle, it just talks to it. */
+  host: Pick<ExtensionHost, 'request'>;
+  /** Resolves who declares `onCommand:<id>` and activates it. */
+  activation: Pick<ExtensionActivationService, 'candidatesFor' | 'activate'>;
   /** Called whenever the set of runnable commands changes, so the renderer
    *  can be told without polling. */
   onRegistryChanged?: (commands: CommandRegistration[]) => void;
-  /** Brings the host up before a command needs it. Forge only starts the
-   *  host when something could run, so the first command of the session may
-   *  well be what starts it. */
-  ensureRunning?: () => Promise<unknown>;
   log?: (message: string) => void;
 }
 
@@ -122,11 +115,8 @@ export class ExtensionCommandDispatcher {
 
   /** Extension that declares `onCommand:<id>`, or null. */
   ownerFor(command: string): string | null {
-    const event = `onCommand:${command}`;
-    for (const extension of this.options.activatable()) {
-      if (extension.activationEvents.includes(event)) return extension.id;
-    }
-    return null;
+    const [owner] = this.options.activation.candidatesFor({ kind: 'command', command });
+    return owner ?? null;
   }
 
   /**
@@ -148,13 +138,10 @@ export class ExtensionCommandDispatcher {
           + `"onCommand:${command}".`,
         );
       }
-      // The host may not be up yet: nothing has needed it so far.
-      if (this.options.host.state.status !== 'running') {
-        await this.options.ensureRunning?.();
-      }
-      // Concurrent activations of the same id share one promise host-side,
-      // so two commands racing to wake the same extension is safe.
-      await this.options.host.request('lifecycle.activate', { id: owner }, { extensionId: owner });
+      // Concurrent activations of the same id share one promise, so two
+      // commands racing to wake the same extension is safe. Starting the
+      // host if it is down is the activation service's business too.
+      await this.options.activation.activate(owner, `onCommand:${command}`);
 
       if (!this.registry.has(command)) {
         throw new RpcError(

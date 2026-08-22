@@ -158,5 +158,5 @@ No se ejecuta código de terceros hasta pasar:
 | Fixtures maliciosos mínimos de **runtime** | Pendiente | Requiere host (3.5) |
 | RPC schema/timeout/heartbeat | Cubierto | Milestone 3.1 ([progreso](./extensions-phase3-progress.md)) |
 | Crash isolation demostrado | Pendiente | Milestone 3.5 |
-| Logs y reporte de activation failure | Pendiente | Milestone 3.4 |
+| Logs y reporte de activation failure | Cubierto | Milestone 3.4 (`ext:host:activation`, métricas y fallos por generación) |
 | Safe Mode | Pendiente | Milestone 3.5 |

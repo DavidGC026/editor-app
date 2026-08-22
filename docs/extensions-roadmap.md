@@ -164,8 +164,23 @@ que ni se leían
 ([extensions-phase3-trust.md](./extensions-phase3-trust.md)). Incremento
 3.1 levantó el kernel del host —`utilityProcess`, handshake, envelope RPC
 con generaciones, timeouts por familia, heartbeat, backoff y circuit
-breaker— todavía sin cargar código de extensión
+breaker— todavía sin cargar código de extensión. Incremento 3.2 puso el
+loader detrás de ese kernel: entrypoint contenido por realpath,
+`require('vscode')` resuelto por dueño, primitivas, enums y
+`ExtensionContext` con storage por extensión, con la activación aislada
+(la extensión que lanza queda `failed` sin arrastrar a las demás).
+Incremento 3.3 completó los comandos de punta a punta —el handler se queda
+en el host, sólo cruzan ids— y la activación bajo demanda por
+`onCommand:<id>`
 ([extensions-phase3-progress.md](./extensions-phase3-progress.md)).
+Incremento 3.4 completó el activation service (índice evento → extensiones
+con `*`, `onStartupFinished`, `onCommand`, `onLanguage` y
+`workspaceContains`), `window.show*Message` con notificaciones no modales,
+`workspace.getConfiguration` por snapshot síncrono y las métricas y fallos
+de activación: con él, el Hello World oficial corre sin modificar, que es
+el criterio de salida del milestone. Pendientes: 3.5 (safe mode,
+aislamiento demostrado y fixtures maliciosas de runtime) y 3.6 (superficie
+de usuario del host).
 
 Diseño detallado (runtime, protocolo RPC, activación, modelo de fallos y
 plan de incrementos 3.0–3.6):
@@ -327,12 +342,12 @@ Criterios de salida:
 
 ## Primer incremento recomendado
 
-El próximo cambio de código es el **incremento 3.4**: activation service
-completo (`onStartupFinished`, `onLanguage`, `workspaceContains`),
-`window.showMessage`, `configuration.get`, diagnostics y métricas. El 3.3
-dejó los comandos ejecutándose de punta a punta y la activación `onCommand`
-resuelta desde `activationEvents`, que es el índice que el resto de eventos
-va a compartir.
+El próximo cambio de código es el **incremento 3.5**: Safe Mode, aislamiento
+demostrado y fixtures maliciosas de runtime. El reinicio y el crash-loop
+breaker existen desde el 3.1 y el 3.4 dejó publicados los fallos de
+activación; falta el arranque explícito sin extensiones, la prueba de
+integración con un `utilityProcess` real y las fixtures que revientan y se
+cuelgan a propósito.
 
 Diseño: [extensions-phase3-design.md](./extensions-phase3-design.md).
 Progreso del kernel: [extensions-phase3-progress.md](./extensions-phase3-progress.md).

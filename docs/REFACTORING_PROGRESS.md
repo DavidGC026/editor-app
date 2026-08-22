@@ -185,6 +185,16 @@ líneas): `electron/main.ts`, `ExplorerPanel.tsx`, `EditorArea.tsx`,
   también lo activable, así que la paleta, el menú del editor y los
   keybindings ejecutan comandos reales de extensión.
   Ver [extensions-phase3-progress.md](./extensions-phase3-progress.md).
+- **Extensiones Milestone 3.4 (criterio de salida del Milestone 3)**: el
+  Hello World oficial de VS Code corre sin modificar — activa por comando,
+  muestra su mensaje y se desactiva limpio. Activation service con índice
+  evento → extensiones (`*`, `onStartupFinished`, `onCommand`, `onLanguage`,
+  `workspaceContains` con scan acotado), una activación por generación con
+  el fallo recordado, métricas y fallos publicados por IPC,
+  `window.show*Message` con notificaciones no modales en el renderer y
+  `workspace.getConfiguration` servido desde un snapshot que main mantiene
+  en step (síncrono, como en VS Code).
+  Ver [extensions-phase3-progress.md](./extensions-phase3-progress.md).
 
 Actualmente `store.ts` ha delegado Layout, Terminal, Git, Remote y Extensiones a
 slices específicos. Siguen inline: workspace, tabs, editor, IA, Live Server,

@@ -490,6 +490,9 @@ function createLoadingResponder() {
       now: input.now,
       log: input.log,
       reportUnsupportedApi: input.reportUnsupportedApi,
+      commandBridge: input.commandBridge,
+      request: input.request,
+      configuration: input.configuration,
     }),
   });
 
@@ -505,6 +508,10 @@ function createLoadingResponder() {
       method,
       payload,
     }),
+    /** Feeds a raw envelope in — used to answer the host's own requests. */
+    send: (envelope) => respond(envelope),
+    /** Last request the host sent to main, if any. */
+    lastOutbound: () => [...notifications].reverse().find((envelope) => envelope.kind === 'request'),
   };
 }
 
@@ -614,6 +621,9 @@ test('shutdown deactivates what is active before answering', async () => {
 const {
   ExtensionCommandDispatcher,
 } = require('../../dist-electron/extensions/application/extension-command-dispatcher.js');
+const {
+  ExtensionActivationService,
+} = require('../../dist-electron/extensions/application/extension-activation-service.js');
 
 test('a fixture command registers through the broker and runs from main', async () => {
   const descriptor = hostDescriptor('commanding');
@@ -631,12 +641,16 @@ test('a fixture command registers through the broker and runs from main', async 
     warn: () => {},
   });
 
-  const dispatcher = new ExtensionCommandDispatcher({
+  const activation = new ExtensionActivationService({
     host,
     activatable: () => [{ id: descriptor.id, activationEvents: ['onCommand:fixture.greet'] }],
     ensureRunning: () => host.start(),
   });
-  host.onEvent((event) => dispatcher.handleHostEvent(event));
+  const dispatcher = new ExtensionCommandDispatcher({ host, activation });
+  host.onEvent((event) => {
+    dispatcher.handleHostEvent(event);
+    activation.handleHostEvent(event);
+  });
 
   await host.start();
   assert.equal(dispatcher.hasCommand('fixture.greet'), false, 'nothing is active yet');
@@ -658,6 +672,189 @@ test('a fixture command registers through the broker and runs from main', async 
   });
   assert.equal(host.state.status, 'running');
 
+  assert.deepEqual(
+    activation.metrics().map((entry) => entry.reason),
+    ['onCommand:fixture.greet'],
+    'the activation was attributed to the command that triggered it',
+  );
+
   await host.stop();
   assert.deepEqual(dispatcher.registered(), [], 'stopping the host clears the registry');
+});
+
+// ── Host → main requests and configuration (increment 3.4) ──────────────
+
+test('the host asks main to show a message and resumes with the answer', async () => {
+  const host = createLoadingResponder();
+  await host.request('lifecycle.initialize', {
+    protocol: 1,
+    apiVersion: '1.90.0',
+    extensions: [hostDescriptor('messaging')],
+    workspace: null,
+    configuration: { 'messaging.greeting': 'buenas' },
+  });
+
+  const activation = host.request('lifecycle.activate', { id: 'forge-tests.messaging' });
+  // The activation cannot finish until main answers: the extension awaits
+  // the message box inside `activate`.
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const outbound = host.lastOutbound();
+  assert.equal(outbound.method, 'window.showMessage');
+  assert.equal(outbound.kind, 'request');
+  assert.equal(outbound.gen, 7, 'the request carries the generation it belongs to');
+  assert.deepEqual(outbound.payload, {
+    severity: 'info',
+    message: 'buenas, mundo',
+    items: ['Sí', 'No'],
+    modal: false,
+  });
+
+  host.send({
+    v: 1,
+    gen: 7,
+    id: outbound.id,
+    kind: 'response',
+    method: 'window.showMessage',
+    payload: { selected: 'Sí' },
+  });
+
+  const answer = await activation;
+  assert.equal(answer.payload.status, 'active');
+});
+
+test('an error from main rejects the host request instead of hanging it', async () => {
+  const host = createLoadingResponder();
+  await host.request('lifecycle.initialize', {
+    protocol: 1,
+    apiVersion: '1.90.0',
+    extensions: [hostDescriptor('messaging')],
+    workspace: null,
+    configuration: {},
+  });
+
+  const activation = host.request('lifecycle.activate', { id: 'forge-tests.messaging' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const outbound = host.lastOutbound();
+
+  host.send({
+    v: 1,
+    gen: 7,
+    id: outbound.id,
+    kind: 'error',
+    method: 'window.showMessage',
+    payload: { code: 'UNSUPPORTED_API', message: 'sin ventana' },
+  });
+
+  const answer = await activation;
+  assert.equal(answer.kind, 'error');
+  assert.match(answer.payload.message, /sin ventana/);
+});
+
+test('configuration.update replaces the snapshot the host serves', async () => {
+  const host = createLoadingResponder();
+  await host.request('lifecycle.initialize', {
+    protocol: 1,
+    apiVersion: '1.90.0',
+    extensions: [hostDescriptor('messaging')],
+    workspace: null,
+    configuration: { 'messaging.greeting': 'hola' },
+  });
+
+  const updated = await host.request('configuration.update', {
+    values: { 'messaging.greeting': 'adiós' },
+  });
+  assert.deepEqual(updated.payload, { ok: true, keys: 1 });
+
+  const activation = host.request('lifecycle.activate', { id: 'forge-tests.messaging' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(
+    host.lastOutbound().payload.message,
+    'adiós, mundo',
+    'the extension read the value pushed after the handshake',
+  );
+  host.send({
+    v: 1,
+    gen: 7,
+    id: host.lastOutbound().id,
+    kind: 'response',
+    method: 'window.showMessage',
+    payload: { selected: null },
+  });
+  await activation;
+});
+
+test('a malformed configuration payload reads as empty, never as garbage', async () => {
+  const host = createLoadingResponder();
+  await host.request('lifecycle.initialize', {
+    protocol: 1,
+    apiVersion: '1.90.0',
+    extensions: [],
+    workspace: null,
+    configuration: 'no soy un objeto',
+  });
+
+  const updated = await host.request('configuration.update', { values: ['tampoco'] });
+  assert.deepEqual(updated.payload, { ok: true, keys: 0 });
+});
+
+// ── Hello World: criterio de salida del Milestone 3 ─────────────────────
+
+test('the unmodified Hello World activates by command, shows its message and deactivates clean', async () => {
+  const descriptor = hostDescriptor('helloworld');
+  const timers = createFakeTimers();
+  const launcher = createFakeLauncher(timers);
+  const shown = [];
+
+  const host = new UtilityProcessExtensionHost({
+    launcher,
+    timers,
+    initialize: () => ({
+      apiVersion: '1.90.0',
+      extensions: [descriptor],
+      workspace: null,
+      trust: true,
+      configuration: {},
+    }),
+    // Main's side of `window.showMessage`; the renderer would be here.
+    onRequest: async (envelope) => {
+      assert.equal(envelope.method, 'window.showMessage');
+      shown.push(envelope.payload);
+      return { selected: undefined };
+    },
+    warn: () => {},
+  });
+
+  const activation = new ExtensionActivationService({
+    host,
+    activatable: () => [{ id: descriptor.id, activationEvents: ['onCommand:helloworld.helloWorld'] }],
+    ensureRunning: () => host.start(),
+  });
+  const dispatcher = new ExtensionCommandDispatcher({ host, activation });
+  host.onEvent((event) => {
+    dispatcher.handleHostEvent(event);
+    activation.handleHostEvent(event);
+  });
+
+  await host.start();
+
+  // Exactly what the command palette does.
+  await dispatcher.execute('helloworld.helloWorld');
+
+  assert.deepEqual(shown, [{
+    severity: 'info',
+    message: 'Hello World from HelloWorld!',
+    items: [],
+    modal: false,
+  }]);
+  assert.equal(activation.stateOf(descriptor.id), 'active');
+  assert.equal(activation.metrics()[0].reason, 'onCommand:helloworld.helloWorld');
+  assert.deepEqual(activation.failures(), []);
+
+  await host.stop();
+
+  assert.equal(host.state.status, 'stopped');
+  assert.deepEqual(dispatcher.registered(), [], 'its command left with it');
+  assert.equal(activation.stateOf(descriptor.id), 'idle');
 });

@@ -60,6 +60,13 @@ import {
   type CommandRegistration,
 } from './extensions/application/extension-command-dispatcher';
 import {
+  ExtensionActivationService,
+  type ActivationFailure,
+  type ActivationMetric,
+} from './extensions/application/extension-activation-service';
+import { scanWorkspaceForPatterns } from './extensions/infrastructure/workspace-scanner';
+import { RpcError } from './extensions/domain/rpc-protocol';
+import {
   WorkspaceTrustService,
   WorkspaceTrustError,
 } from './extensions/application/workspace-trust-service';
@@ -640,27 +647,164 @@ const extensionHost = new UtilityProcessExtensionHost({
     extensions: activatableDescriptors(),
     workspace: workspaceProvider(),
     trust: getWorkspaceTrustStatus().state === 'trusted',
+    configuration: effectiveConfigurationSnapshot(),
   }),
+  // Host → main requests. Only `window.showMessage` so far; everything else
+  // falls through to the broker's `UNSUPPORTED_API`, which is what feeds the
+  // compatibility report with real usage.
+  onRequest: async (envelope) => {
+    if (envelope.method !== 'window.showMessage') {
+      throw new RpcError(
+        'UNSUPPORTED_API',
+        `"${envelope.method}" no está soportado por Forge todavía.`,
+      );
+    }
+    return showExtensionMessage(envelope.payload, envelope.extensionId ?? null);
+  },
 });
 
-// The command registry the host publishes, plus on-demand activation. It
-// listens to the host's own event stream rather than being pushed to, so a
-// restart clears it without anyone having to remember to.
-const commandDispatcher = new ExtensionCommandDispatcher({
+/** Every declared setting with the value the ConfigurationService resolves,
+ *  flattened by key. This is what `workspace.getConfiguration()` reads. */
+function effectiveConfigurationSnapshot(): Record<string, unknown> {
+  const snapshot: Record<string, unknown> = {};
+  for (const entry of configurationService.inspectAll()) {
+    snapshot[entry.key] = entry.effectiveValue;
+  }
+  return snapshot;
+}
+
+// ── window.showMessage ──────────────────────────────────────────────────
+// The host asks, the renderer shows, the user (maybe) picks. Main holds the
+// promise in between: the notification is not modal, so the answer can take
+// as long as the user takes — or never come, if they dismiss it.
+
+interface PendingMessage {
+  resolve: (selected: string | undefined) => void;
+}
+
+const pendingMessages = new Map<number, PendingMessage>();
+let nextMessageId = 1;
+
+async function showExtensionMessage(
+  payload: unknown,
+  extensionId: string | null,
+): Promise<{ selected: string | undefined }> {
+  const body = payload as
+    | { severity?: unknown; message?: unknown; items?: unknown; modal?: unknown }
+    | null;
+  const message = body && typeof body.message === 'string' ? body.message : '';
+  if (!message) {
+    throw new RpcError('INVALID_PAYLOAD', '"window.showMessage" requiere un mensaje.');
+  }
+  const severity = body?.severity === 'warn' || body?.severity === 'error'
+    ? body.severity
+    : 'info';
+  const items = Array.isArray(body?.items)
+    ? body.items.filter((item): item is string => typeof item === 'string')
+    : [];
+
+  const windows = BrowserWindow.getAllWindows();
+  if (windows.length === 0) {
+    // Nowhere to show it. Resolving as "dismissed" keeps the extension
+    // moving; hanging would be worse than not being seen.
+    return { selected: undefined };
+  }
+
+  const id = nextMessageId++;
+  const selected = await new Promise<string | undefined>((resolve) => {
+    pendingMessages.set(id, { resolve });
+    for (const win of windows) {
+      win.webContents.send('ext:host:message', { id, severity, message, items, extensionId });
+    }
+  });
+  return { selected };
+}
+
+/** Called from the renderer when the user picks an item or dismisses. */
+export function resolveExtensionMessage(id: number, selection: string | null): void {
+  const pending = pendingMessages.get(id);
+  if (!pending) return;
+  pendingMessages.delete(id);
+  pending.resolve(typeof selection === 'string' ? selection : undefined);
+}
+
+function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(channel, payload);
+  }
+}
+
+// Who activates and when. It owns the event index and the per-extension
+// activation state, so every trigger — command, language, startup,
+// workspaceContains — agrees on what is already running.
+const activationService = new ExtensionActivationService({
   host: extensionHost,
   activatable: () => activatableExtensions().map((entry) => ({
     id: entry.id,
     activationEvents: entry.activationEvents ?? [],
   })),
   ensureRunning: () => startExtensionHost(),
-  onRegistryChanged: (commands) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send('ext:host:commands', commands);
-    }
-  },
+  workspaceContains: (patterns) => scanWorkspaceForPatterns(localWorkspaceDir(), patterns),
+  log: (message) => console.warn('[forge:ext-host]', message),
+  onDidChange: () => broadcast('ext:host:activation', getExtensionActivationReport()),
+});
+
+// The command registry the host publishes. It listens to the host's own
+// event stream rather than being pushed to, so a restart clears it without
+// anyone having to remember to.
+const commandDispatcher = new ExtensionCommandDispatcher({
+  host: extensionHost,
+  activation: activationService,
+  onRegistryChanged: (commands) => broadcast('ext:host:commands', commands),
   log: (message) => console.warn('[forge:ext-host]', message),
 });
-extensionHost.onEvent((event) => commandDispatcher.handleHostEvent(event));
+extensionHost.onEvent((event) => {
+  commandDispatcher.handleHostEvent(event);
+  activationService.handleHostEvent(event);
+});
+
+// Settings changed under the host's feet: push the new snapshot instead of
+// restarting. A restart would deactivate every extension over a value they
+// may not even read.
+configurationService.onDidChange(() => {
+  if (extensionHost.state.status !== 'running') return;
+  void extensionHost
+    .request('configuration.update', { values: effectiveConfigurationSnapshot() })
+    .catch((err) => console.warn('[forge:ext-host] configuración no propagada:', err.message));
+});
+
+/** Activation metrics and failures of the live generation, for the UI. */
+export function getExtensionActivationReport(): {
+  metrics: ActivationMetric[];
+  failures: ActivationFailure[];
+} {
+  return { metrics: activationService.metrics(), failures: activationService.failures() };
+}
+
+/** Fires a workbench trigger (`onLanguage`, `onStartupFinished`). Never
+ *  rejects: the user opening a file is not asking for an activation, and a
+ *  broken extension must not surface as a failed file open. */
+export async function fireExtensionActivation(
+  trigger: { kind: 'startupFinished' } | { kind: 'language'; language: string },
+): Promise<void> {
+  try {
+    if (activationService.candidatesFor(trigger).length === 0) return;
+    await startExtensionHost();
+    await activationService.fire(trigger);
+  } catch (err) {
+    console.warn('[forge:ext-host] trigger falló:', (err as Error).message);
+  }
+}
+
+/** Resolves `workspaceContains:` for the open workspace. Called on startup
+ *  and on every workspace switch. */
+export async function fireWorkspaceContainsActivation(): Promise<void> {
+  try {
+    await activationService.fireWorkspaceContains();
+  } catch (err) {
+    console.warn('[forge:ext-host] workspaceContains falló:', (err as Error).message);
+  }
+}
 
 /** Command ids the running generation can actually execute. The renderer
  *  needs this synchronously to decide whether a keystroke is consumed. */
@@ -713,6 +857,10 @@ export function stopExtensionHost(reason = 'cierre de Forge'): Promise<void> {
  * per generation.
  */
 export async function syncExtensionHost(reason: string): Promise<void> {
+  // The event index is derived from the activatable set, so it is stale the
+  // moment that set changes — including when the host is not running and
+  // there is nothing else to do here.
+  activationService.invalidate();
   const status = extensionHost.state.status;
   if (status === 'stopped' || status === 'disabled') return;
   if (activatableExtensions().length === 0) {

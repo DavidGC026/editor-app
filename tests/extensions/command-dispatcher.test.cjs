@@ -9,6 +9,9 @@ const test = require('node:test');
 const {
   ExtensionCommandDispatcher,
 } = require('../../dist-electron/extensions/application/extension-command-dispatcher.js');
+const {
+  ExtensionActivationService,
+} = require('../../dist-electron/extensions/application/extension-activation-service.js');
 
 const stateEvent = (overrides = {}) => ({
   type: 'state',
@@ -36,10 +39,11 @@ const registerEvent = (command, extensionId, { generation = 1, method = 'command
 });
 
 /**
- * Dispatcher over a scripted host: `requests` records what was asked, and
- * `onActivate` lets a test decide what the activation does to the registry
- * — which is the only way to reproduce "the extension woke up and
- * registered" without a process.
+ * Dispatcher over a scripted host, wired to the *real* activation service:
+ * on-demand activation is a collaboration between the two, and stubbing the
+ * service here would test the stub. `onActivate` lets a test decide what
+ * the activation does to the registry — the only way to reproduce "the
+ * extension woke up and registered" without a process.
  */
 function createDispatcher({ activatable = [], onActivate, executeResult = 'ok' } = {}) {
   const requests = [];
@@ -64,19 +68,26 @@ function createDispatcher({ activatable = [], onActivate, executeResult = 'ok' }
     },
   };
 
-  const dispatcher = new ExtensionCommandDispatcher({
+  const activation = new ExtensionActivationService({
     host,
     activatable: () => activatable,
-    onRegistryChanged: (commands) => published.push(commands),
     ensureRunning: async () => {
       state.status = 'running';
       requests.push({ method: 'ensureRunning' });
     },
     log: (message) => logs.push(message),
   });
-  dispatcher.handleHostEvent(stateEvent());
 
-  return { dispatcher, requests, published, logs, state };
+  const dispatcher = new ExtensionCommandDispatcher({
+    host,
+    activation,
+    onRegistryChanged: (commands) => published.push(commands),
+    log: (message) => logs.push(message),
+  });
+  dispatcher.handleHostEvent(stateEvent());
+  activation.handleHostEvent(stateEvent());
+
+  return { dispatcher, activation, requests, published, logs, state };
 }
 
 // ── Registry ────────────────────────────────────────────────────────────
@@ -252,6 +263,7 @@ test('a stopped host is started before the command that needs it', async () => {
   // A stopped host cleared the registry, which is the state a first command
   // of the session finds.
   d.dispatcher.handleHostEvent(stateEvent({ status: 'stopped' }));
+  d.activation.handleHostEvent(stateEvent({ status: 'stopped' }));
 
   await d.dispatcher.execute('demo.run');
 

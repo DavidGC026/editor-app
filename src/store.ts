@@ -473,6 +473,21 @@ const initialEditorSettings = loadEditorSettings();
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let autoSaveTabId: string | null = null;
 
+/**
+ * Tells main which language the user is looking at, so extensions declaring
+ * `onLanguage:<id>` activate. Sent on open and on tab switch — VS Code
+ * activates on both, and an extension that only woke on open would stay
+ * dormant for a file the user already had open when it was installed.
+ */
+function notifyActiveLanguage(language: string | undefined | null): void {
+  if (!language) return;
+  try {
+    window.electronAPI?.ext?.notifyLanguage?.(language);
+  } catch {
+    /* outside Electron there is no host to wake */
+  }
+}
+
 export const useStore = create<EditorState>((set, get, api) => ({
   ...createLayoutSlice(set, get, api as any),
   ...createTerminalSlice(set, get, api as any),
@@ -1203,6 +1218,7 @@ export const useStore = create<EditorState>((set, get, api) => ({
 
       const content = await window.electronAPI.readFile(resolvedPath);
       const language = getLanguageFromPath(resolvedPath);
+      notifyActiveLanguage(language);
       const name = resolvedPath.split(/[\\/]/).pop() || resolvedPath;
       const reveal = findTextReveal(content, options);
 
@@ -1355,6 +1371,7 @@ export const useStore = create<EditorState>((set, get, api) => ({
       activeTabId: tabId,
       ...(tab ? { selectedPath: tab.path, selectedKind: 'file' as SelectedNodeKind } : {}),
     });
+    notifyActiveLanguage(tab?.language);
   },
 
   updateTabContent: (tabId: string, content: string) => {

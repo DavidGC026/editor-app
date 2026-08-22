@@ -577,3 +577,99 @@ test('executeCommand reaches the host own commands and refuses workbench ones', 
     { api: 'commands.executeCommand', extensionId: 'forge-tests.commanding' },
   ]);
 });
+
+// ── window.showMessage y workspace.getConfiguration (increment 3.4) ──────
+
+test('showInformationMessage asks main and resolves with what the user picked', async (t) => {
+  const asked = [];
+  const { runtime } = createRuntime({
+    request: async (method, payload, extensionId) => {
+      asked.push({ method, payload, extensionId });
+      return { selected: 'Sí' };
+    },
+    configuration: () => ({ 'messaging.greeting': 'buenas' }),
+  });
+  runtime.setExtensions([descriptorFor('messaging')]);
+  t.after(() => runtime.deactivateAll());
+
+  await runtime.activate('forge-tests.messaging');
+
+  assert.deepEqual(asked, [{
+    method: 'window.showMessage',
+    payload: {
+      severity: 'info',
+      message: 'buenas, mundo',
+      items: ['Sí', 'No'],
+      modal: false,
+    },
+    extensionId: 'forge-tests.messaging',
+  }]);
+});
+
+test('configuration is read synchronously from the snapshot main shipped', async (t) => {
+  let picked;
+  const { runtime } = createRuntime({
+    request: async () => ({ selected: undefined }),
+    configuration: () => ({ 'messaging.greeting': 'qué tal' }),
+  });
+  runtime.setExtensions([descriptorFor('messaging')]);
+  t.after(() => runtime.deactivateAll());
+
+  await runtime.activate('forge-tests.messaging');
+  const api = require('node:module')._load(
+    'vscode',
+    { filename: path.join(FIXTURES, 'messaging', 'out', 'extension.js') },
+    false,
+  );
+  const config = api.workspace.getConfiguration('messaging');
+
+  assert.equal(config.get('greeting'), 'qué tal');
+  assert.equal(config.get('nope', 'fallback'), 'fallback', 'the default is used when unset');
+  assert.equal(config.has('greeting'), true);
+  assert.equal(config.has('nope'), false);
+  assert.deepEqual(config.inspect('greeting'), {
+    key: 'messaging.greeting',
+    globalValue: 'qué tal',
+  });
+  assert.equal(picked, undefined);
+
+  // Without a section the keys are read whole, which is how extensions
+  // reading another extension's settings do it.
+  assert.equal(api.workspace.getConfiguration().get('messaging.greeting'), 'qué tal');
+});
+
+test('writing configuration from an extension is refused, and reported', async (t) => {
+  const { runtime, unsupported } = createRuntime({
+    request: async () => ({ selected: undefined }),
+    configuration: () => ({}),
+  });
+  runtime.setExtensions([descriptorFor('messaging')]);
+  t.after(() => runtime.deactivateAll());
+  await runtime.activate('forge-tests.messaging');
+
+  const api = require('node:module')._load(
+    'vscode',
+    { filename: path.join(FIXTURES, 'messaging', 'out', 'extension.js') },
+    false,
+  );
+
+  await assert.rejects(api.workspace.getConfiguration('messaging').update('greeting', 'x'), (err) => {
+    assert.equal(err.code, 'UNSUPPORTED_API');
+    return true;
+  });
+  assert.deepEqual(unsupported, [
+    { api: 'workspace.getConfiguration().update', extensionId: 'forge-tests.messaging' },
+  ]);
+});
+
+test('without a channel to main, showMessage fails typed instead of hanging', async (t) => {
+  const { runtime, unsupported } = createRuntime({ configuration: () => ({}) });
+  runtime.setExtensions([descriptorFor('messaging')]);
+  t.after(() => runtime.deactivateAll());
+
+  await assert.rejects(runtime.activate('forge-tests.messaging'), (err) => {
+    assert.equal(err.code, 'UNSUPPORTED_API');
+    return true;
+  });
+  assert.equal(unsupported.length, 1);
+});

@@ -8,6 +8,7 @@ import BottomPanel, { TerminalsPanel } from './components/BottomPanel';
 import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
 import RemoteSSHModal from './components/RemoteSSHModal';
+import ExtensionNotifications from './components/ExtensionNotifications';
 import QuickOpen from './components/QuickOpen';
 import AIPanel from './components/AIPanel/AIPanel';
 import { Bot, Eraser, Maximize2, MessageSquare, Minimize2, RotateCcw, Terminal as TerminalIcon, X } from 'lucide-react';
@@ -897,6 +898,7 @@ export default function App() {
       {commandPaletteOpen && <CommandPalette />}
       {quickOpenOpen && <QuickOpen />}
       <RemoteSSHModal />
+      <ExtensionNotifications />
     </div>
   );
 }

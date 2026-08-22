@@ -56,6 +56,8 @@ export interface RuntimeFactoryInput {
   log: ExtensionRuntimeOptions['log'];
   reportUnsupportedApi: ExtensionRuntimeOptions['reportUnsupportedApi'];
   commandBridge: CommandBridge;
+  request: NonNullable<ExtensionRuntimeOptions['request']>;
+  configuration: NonNullable<ExtensionRuntimeOptions['configuration']>;
   now: () => number;
 }
 
@@ -92,6 +94,8 @@ function createDefaultRuntime(input: RuntimeFactoryInput): ExtensionRuntime {
     log: input.log,
     reportUnsupportedApi: input.reportUnsupportedApi,
     commandBridge: input.commandBridge,
+    request: input.request,
+    configuration: input.configuration,
   });
 }
 
@@ -109,6 +113,20 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
   let initialized = false;
   let runtime: ExtensionRuntime | null = null;
   let generation = 0;
+  // Effective configuration, as main resolved it. Kept here (not fetched per
+  // read) because `workspace.getConfiguration(...).get()` is synchronous.
+  let configuration: Record<string, unknown> = {};
+
+  // The host's own outbound requests (`window.showMessage`, …). Ids are
+  // per sender, so they may collide with main's; there is no ambiguity
+  // because only *responses* are matched here and only *requests* are
+  // switched on below.
+  const pending = new Map<number, {
+    resolve: (value: unknown) => void;
+    reject: (err: RpcError) => void;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>();
+  let nextRequestId = 1;
 
   const reply = (
     request: RpcEnvelope,
@@ -141,6 +159,53 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
     });
   };
 
+  /**
+   * Asks main something and waits. Rejects on timeout rather than hanging:
+   * an extension awaiting a message box that main never answers would
+   * otherwise keep its activation promise alive for the whole session.
+   */
+  const hostRequest = (
+    method: string,
+    payload: unknown,
+    extensionId?: string,
+    timeoutMs = 60_000,
+  ): Promise<unknown> => new Promise((resolve, reject) => {
+    if (!options.notify) {
+      reject(new RpcError('HOST_UNAVAILABLE', 'El host no tiene canal hacia main.'));
+      return;
+    }
+    const id = nextRequestId++;
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+        pending.delete(id);
+        reject(new RpcError('TIMEOUT', `"${method}" no obtuvo respuesta de Forge.`));
+      }, timeoutMs)
+      : null;
+    // `unref` where available: a pending message box must not keep the
+    // process alive when everything else is done.
+    timer?.unref?.();
+    pending.set(id, { resolve, reject, timer });
+
+    options.notify({
+      v: RPC_PROTOCOL_VERSION,
+      gen: generation,
+      id,
+      kind: 'request',
+      method,
+      payload,
+      ...(extensionId ? { extensionId } : {}),
+    });
+  });
+
+  const settle = (message: RpcEnvelope): void => {
+    const entry = pending.get(message.id);
+    if (!entry) return;
+    pending.delete(message.id);
+    if (entry.timer) clearTimeout(entry.timer);
+    if (message.kind === 'error') entry.reject(RpcError.fromPayload(message.payload));
+    else entry.resolve(message.payload);
+  };
+
   const log = (level: RpcLogLevel, message: string, extensionId?: string): void => {
     notify('diagnostics.log', { level, message, extensionId: extensionId ?? null }, extensionId);
   };
@@ -167,8 +232,12 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
       warn('mensaje descartado: no es un envelope válido');
       return null;
     }
-    // Main only issues requests: the host's own traffic is notifications
-    // (registrations, logs), which need no answer.
+    // Answers to the host's own requests settle their promise; everything
+    // else that is not a request needs no reply.
+    if (message.kind === 'response' || message.kind === 'error') {
+      settle(message);
+      return null;
+    }
     if (message.kind !== 'request') return null;
 
     try {
@@ -176,7 +245,7 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
         case 'lifecycle.initialize': {
           const payload = message.payload as
             | { protocol?: unknown; apiVersion?: unknown; extensions?: unknown;
-                workspace?: unknown }
+                workspace?: unknown; configuration?: unknown }
             | null;
           if (!payload || typeof payload !== 'object'
             || payload.protocol !== RPC_PROTOCOL_VERSION) {
@@ -188,6 +257,7 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
 
           generation = message.gen;
           const workspacePath = typeof payload.workspace === 'string' ? payload.workspace : null;
+          configuration = plainRecord(payload.configuration);
           const descriptors = descriptorsFrom(payload.extensions, warn);
 
           runtime = createRuntime({
@@ -210,6 +280,8 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
                 notify('commands.unregister', { command: commandId, extensionId }, extensionId);
               },
             },
+            request: (method, payload, extensionId) => hostRequest(method, payload, extensionId),
+            configuration: () => configuration,
             now: options.now,
           });
           runtime.setExtensions(descriptors);
@@ -235,6 +307,13 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
         case 'lifecycle.activate': {
           const result = await requireRuntime().activate(extensionIdOf(message));
           return reply(message, 'response', result);
+        }
+        case 'configuration.update': {
+          // Main owns precedence (default < override < user < workspace) and
+          // ships the resolved values; the host never merges scopes itself.
+          const payload = message.payload as { values?: unknown } | null;
+          configuration = plainRecord(payload?.values);
+          return reply(message, 'response', { ok: true, keys: Object.keys(configuration).length });
         }
         case 'commands.execute': {
           const payload = message.payload as { command?: unknown; args?: unknown } | null;
@@ -281,6 +360,14 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
         : new RpcError('ACTIVATION_FAILED', err instanceof Error ? err.message : String(err)));
     }
   };
+}
+
+/** Accepts only a plain object of values; anything else reads as empty
+ *  rather than letting a malformed payload shadow the real settings. */
+function plainRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
 }
 
 /**

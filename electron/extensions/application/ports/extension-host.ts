@@ -47,6 +47,9 @@ export interface ExtensionHostInitializePayload {
   extensions: ExtensionHostDescriptor[];
   workspace: string | null;
   trust: boolean;
+  /** Effective settings, flattened by key. Sent whole because
+   *  `workspace.getConfiguration(...).get()` is synchronous host-side. */
+  configuration: Record<string, unknown>;
 }
 
 /** What the host answers to the handshake. */

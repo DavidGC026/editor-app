@@ -406,11 +406,117 @@ Pruebas añadidas (24 casos nuevos; la suite pasa de 216 a 240 tests):
 - **Un comando que lanza consume su disparador.** Lo contrario dejaría pasar
   la pulsación a otro binding después de que la extensión ya hizo trabajo.
 
+## Incremento 3.4 — activation service, mensajes, configuración y métricas
+
+Completado (2026-08-22). Criterio de salida del diseño §8 —y del Milestone 3
+entero—: *«Hello World sin modificar: instala, activa por comando, muestra
+mensaje, desactiva limpio»*. La fixture `helloworld` es el ejemplo oficial de
+VS Code copiado tal cual, sin adaptar a Forge, y el test recorre el camino
+completo.
+
+- **Vocabulario de eventos** (`domain/activation-events.ts`): parser y
+  matcher puros para `*`, `onStartupFinished`, `onCommand:`, `onLanguage:` y
+  `workspaceContains:`. Lo que Forge no sabe disparar se reconoce como
+  `unknown` en lugar de ignorarse, que es lo que permite decir qué necesita
+  una extensión en vez de que falle sin explicación. `*` activa **sólo** en
+  arranque: plegarlo en todos los triggers la reactivaría con cada lenguaje.
+- **Glob propio para `workspaceContains`**: `*`, `**`, `?` y `{a,b}`
+  traducidos a RegExp con los puntos escapados. El patrón viene de un
+  manifiesto, así que no puede hacer nada más que emparejar; `**/` acepta
+  cero segmentos, que es lo que hace que `**/package.json` encuentre el del
+  raíz.
+- **`ExtensionActivationService`** (application): índice evento → extensiones
+  cacheado e invalidado por generación o al cambiar el conjunto — disparar un
+  trigger no puede recorrer todos los manifiestos instalados
+  (arquitectura §9). Una activación por extensión y generación, promesa
+  compartida entre llamadas concurrentes, y el resultado **recordado**: una
+  extensión que falló no se reintenta con cada pulsación que toque su
+  lenguaje. Un trigger nunca rechaza (el usuario abrió un archivo, no pidió
+  activar nada); sólo el camino explícito de un comando propaga el error.
+- **Métricas y fallos**: `durationMs` lo mide el host —el round-trip es coste
+  de Forge, no de la extensión, y cargárselo haría los números inútiles para
+  decidir qué deshabilitar—, con el `reason` que la despertó. `metrics()` y
+  `failures()` se publican por `ext:host:activation`, que es lo que cierra
+  «logs y reporte de activation failure» del gate de seguridad.
+- **Cliente RPC en el host**: el bootstrap pasa de sólo responder a también
+  **preguntar**, con correlación por id propio y timeout de 60 s. Los ids de
+  cada lado pueden coincidir sin ambigüedad porque sólo se emparejan
+  respuestas y sólo se despachan requests.
+- **`window.show{Information,Warning,Error}Message`**: host→main→renderer y
+  vuelta. Main sostiene la promesa mientras el usuario decide, y el
+  componente `ExtensionNotifications` responde **por todas las salidas** —
+  botón, descarte o desmontaje—, porque un mensaje que no resuelve deja a la
+  extensión colgada de su propia promesa. `modal: true` se respeta como
+  énfasis visual: una extensión no congela el workbench.
+- **`workspace.getConfiguration`** servido desde un **snapshot**, no por
+  round-trip. En VS Code `get()` es síncrono y las extensiones lo llaman
+  dentro de `activate` y de sus handlers; devolver una promesa las rompería.
+  Main resuelve la precedencia (default < override < user < workspace), envía
+  los valores efectivos en el handshake y empuja `configuration.update` al
+  cambiar — reiniciar el host por un ajuste desactivaría extensiones que
+  quizá ni lo leen. Escribir configuración desde una extensión sigue sin
+  soportarse, y lo dice.
+- **Disparadores cableados**: `onStartupFinished` y `workspaceContains` tras
+  crear la ventana (que es lo que significa «startup finished»: no «lo antes
+  posible» sino «cuando el usuario tiene dónde ver el resultado»), y
+  `onLanguage` desde el renderer al abrir un archivo **y al cambiar de
+  pestaña** — una extensión instalada después no debería quedarse dormida
+  para un archivo que ya estaba abierto.
+- **Scanner acotado** (`infrastructure/workspace-scanner.ts`): BFS con
+  presupuesto de entradas y profundidad, saltando `node_modules`, `.git` y
+  compañía, sin seguir symlinks de directorio, y que corta en cuanto todos
+  los patrones han encontrado algo. Esto corre al abrir carpeta: un recorrido
+  sin límites convertiría abrir un monorepo en varios segundos de I/O.
+
+Pruebas añadidas (25 casos nuevos; la suite pasa de 240 a 265 tests):
+
+- `tests/extensions/activation.test.cjs` (16): parsing de los cinco eventos y
+  de lo desconocido, matching por tipo (con `*` que no reactiva por
+  lenguaje), el subconjunto de glob, trigger de arranque y de lenguaje,
+  trigger que no rechaza y registra el fallo, extensión fallida que no se
+  reintenta, activaciones concurrentes que comparten petición, host parado
+  que se arranca, generación nueva que olvida, `workspaceContains` que sólo
+  activa lo que coincidió, eventos desconocidos reportados, invalidación del
+  índice y el scanner (raíz, anidado, `node_modules`, profundidad, workspace
+  ausente).
+- `tests/extensions/extension-runtime.test.cjs` (+4): `showInformationMessage`
+  con la carga exacta que cruza, configuración leída síncronamente del
+  snapshot (con sección y sin ella), escritura rechazada y reportada, y
+  ausencia de canal que falla tipado en lugar de colgarse.
+- `tests/extensions/extension-host.test.cjs` (+5): request saliente del host
+  con su generación, respuesta que reanuda la activación, error que la
+  rechaza, `configuration.update` que reemplaza el snapshot, payload
+  malformado que lee vacío, y **Hello World completo**: activa por comando
+  desde el dispatcher, muestra su mensaje, y al parar el host su comando se
+  retira y su estado vuelve a `idle`.
+- `tests/fixtures/extensions/host/`: `messaging` (mensajes + configuración) y
+  `helloworld` (el ejemplo oficial sin tocar).
+
+### Decisiones del incremento 3.4
+
+- **La configuración va por snapshot, no por request.** Es una desviación
+  deliberada del diseño §3.3, que la listaba como `configuration.get`
+  host→main: implementarla así habría hecho asíncrona una API que en VS Code
+  es síncrona, y ninguna extensión real sobrevive a eso.
+- **Un trigger no rechaza; un comando sí.** Abrir un archivo no es pedir una
+  activación. Si `onLanguage` propagara el fallo, una extensión rota se
+  manifestaría como un archivo que no abre.
+- **El fallo se recuerda por generación.** Reintentar en cada trigger
+  convertiría una extensión rota en un bucle de activaciones fallidas a
+  cada pulsación.
+- **El índice se cachea y se invalida explícitamente.** Es la ruta caliente
+  (cada cambio de pestaña); reconstruirlo por trigger es justo lo que la
+  arquitectura §9 prohíbe.
+- **Las notificaciones no son modales.** Una extensión no debe poder
+  bloquear el editor, ni siquiera pidiéndolo con `modal: true`.
+- **El scan tiene presupuesto.** `workspaceContains` es una comodidad; que
+  cueste segundos al abrir una carpeta grande no lo sería.
+
 ## Próximo incremento
 
-3.4 — activation service completo (`onStartupFinished`, `onLanguage`,
-`workspaceContains`), `window.showMessage`, `configuration.get`, diagnostics
-y métricas de activación. El seam está listo: el dispatcher ya resuelve
-`onCommand` desde `activationEvents`, que es el mismo índice que el resto de
-eventos necesita, y `activationMetrics` tiene ya su `durationMs` medido por
-activación.
+3.5 — Safe Mode, aislamiento demostrado y las fixtures maliciosas de
+runtime. El crash-loop breaker y el reinicio existen desde el 3.1; falta el
+arranque explícito sin extensiones, la prueba de integración con un
+`utilityProcess` real (pendiente desde el 3.1) y las fixtures que revientan
+y se cuelgan a propósito. Después, 3.6 pinta el estado del host, los tiempos
+de activación y los fallos que el 3.4 ya acumula y publica.

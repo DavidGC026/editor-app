@@ -21,7 +21,7 @@ genérico “Active”.
 
 ## Estado real al 2026-08-22
 
-Actualizada tras el Milestone 3.1
+Actualizada tras el Milestone 3.4
 ([extensions-phase3-progress.md](./extensions-phase3-progress.md)).
 El motor declarativo cerró en el Milestone 2.
 
@@ -41,20 +41,20 @@ El motor declarativo cerró en el Milestone 2.
 | Recursos declarativos | `partial` | Readers aislados, path traversal y symlinks bloqueados en extract; falta validación de corpus público |
 | Analyzer | `partial` | Nivel `none` / `partial` / `full` + blockers tipados por carga real; sin evidencia runtime |
 | Grammars | `declarative` | TextMate real (vscode-textmate + oniguruma WASM) con estado multi-línea e inyecciones |
-| Configuration | `declarative` | Scopes default < override < user < workspace, validación y settings UI |
-| Commands | `declarative` | Metadata, paleta y `enablement`; sin handler hasta el Extension Host |
+| Configuration | `partial` | Scopes default < override < user < workspace, validación y settings UI; las extensiones la leen desde el host (snapshot en step), escribirla desde una extensión aún no |
+| Commands | `partial` | `registerCommand`/`executeCommand`/`getCommands` ejecutan en el host desde la paleta, el menú del editor y keybindings; los comandos del propio workbench aún no son invocables desde una extensión |
 | Keybindings | `declarative` | Chords single-stroke por plataforma, gated por `when`, tras los atajos nativos |
 | Menus | `declarative` | `explorer/context` y `editor/context` con `when` y grupos de VS Code |
 | Context keys / `when` | `declarative` | Parser propio con la precedencia de VS Code y keys publicadas por el workbench |
-| Extension `main` | `metadata` | No se ejecuta código Node — siguiente corte: 3.2, ver [extensions-phase3-design.md](./extensions-phase3-design.md) |
+| Extension `main` | `partial` | Se carga y se ejecuta en el host: entrypoint contenido por realpath, `require('vscode')` por dueño y `activate`/`deactivate` con aislamiento de fallos |
 | Extension `browser` | `metadata` | No existe Web Extension Host |
-| Activation events | `metadata` | Se muestran, no se despachan |
-| VS Code API | `unsupported` | No existe módulo `vscode` compatible |
+| Activation events | `partial` | `*`, `onStartupFinished`, `onCommand`, `onLanguage` y `workspaceContains` (scan acotado) activan de verdad, con métricas y fallos por generación; el resto se reconoce como no despachable en lugar de ignorarse |
+| VS Code API | `partial` | Facade por extensión con primitivas (`Disposable`, `EventEmitter`, `Uri`, cancelación), enums, `commands`, `window.show*Message`, `workspace.getConfiguration` (snapshot síncrono, sólo lectura) y `ExtensionContext`; el resto lanza `UnsupportedApiError` y se reporta para el análisis de compatibilidad |
 | LSP/DAP/tasks/testing | `unsupported` | Forge tiene LSP/Git/terminal nativos, aún sin bridge de extensiones |
 | Views/webviews/notebooks | `unsupported` | Sin workbench contribution hosts |
 | Remote extension host | `unsupported` | Remote SSH no ejecuta extensiones junto al workspace |
-| Workspace Trust | `partial` | Trust por workspace y Restricted Mode con política de activación; falta la mitad runtime (el host aún no carga código) |
-| Extension Host (kernel) | `partial` | `utilityProcess` con handshake, envelope RPC, heartbeat, backoff y circuit breaker; todavía no carga extensiones (3.2) |
+| Workspace Trust | `partial` | Trust por workspace y Restricted Mode con política de activación honrada por el host: una extensión bloqueada ni siquiera viaja en el handshake. Falta Safe Mode (3.5) |
+| Extension Host (kernel) | `partial` | `utilityProcess` con handshake, envelope RPC, heartbeat, backoff y circuit breaker; carga extensiones, activa por evento y ejecuta comandos — el Hello World oficial corre sin modificar. Faltan safe mode (3.5) y la superficie de usuario (3.6) |
 
 ## Matriz objetivo por contribution point
 

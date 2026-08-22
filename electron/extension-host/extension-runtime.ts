@@ -61,6 +61,13 @@ export interface ExtensionRuntimeOptions {
   /** Publishes command registrations to main. Without one the host still
    *  works standalone — useful in tests — but nothing outside knows. */
   commandBridge?: CommandBridge;
+  /** Asks main something and waits for the answer (`window.showMessage`).
+   *  Absent in unit tests, where those APIs report as unavailable. */
+  request?: (method: string, payload: unknown, extensionId: string) => Promise<unknown>;
+  /** Effective configuration snapshot, kept in step by main. Read
+   *  synchronously because `workspace.getConfiguration(...).get()` is
+   *  synchronous in VS Code and extensions rely on that. */
+  configuration?: () => Record<string, unknown>;
 }
 
 interface LoadedExtension {
@@ -300,7 +307,11 @@ export class ExtensionRuntime {
       apiVersion: this.options.apiVersion,
       workspacePath: this.options.workspacePath,
       reportUnsupported: (apiName, owner) => this.options.reportUnsupportedApi(apiName, owner),
-      implemented: { commands: this.commandsApiFor(extensionId) },
+      implemented: {
+        commands: this.commandsApiFor(extensionId),
+        window: this.windowApiFor(extensionId),
+        workspace: this.workspaceApiFor(extensionId),
+      },
     });
     this.apis.set(extensionId, api);
     return api;
@@ -339,6 +350,85 @@ export class ExtensionRuntime {
       // host's own, and saying which ones those are is more useful than
       // refusing the call outright.
       getCommands: async () => this.commands.ids(),
+    };
+  }
+
+  /** `window.show*Message`: the only `window` members implemented so far.
+   *  Everything else in the namespace keeps throwing, which is what tells
+   *  the compatibility report what real extensions actually need next. */
+  private windowApiFor(extensionId: string): Record<string, unknown> {
+    const show = (severity: 'info' | 'warn' | 'error') =>
+      async (message: string, ...rest: unknown[]): Promise<string | undefined> => {
+        // VS Code's overload: `(message, options?, ...items)`. Detecting the
+        // options object by shape is what keeps both call styles working.
+        const [first] = rest;
+        const hasOptions = first !== null && typeof first === 'object' && !Array.isArray(first);
+        const options = hasOptions ? first as { modal?: boolean } : undefined;
+        const items = (hasOptions ? rest.slice(1) : rest).filter(
+          (item): item is string => typeof item === 'string',
+        );
+
+        if (!this.options.request) {
+          this.options.reportUnsupportedApi(`window.show${severity}Message`, extensionId);
+          throw new RpcError(
+            'UNSUPPORTED_API',
+            'El host no puede mostrar mensajes sin conexión con Forge.',
+          );
+        }
+        const answer = await this.options.request('window.showMessage', {
+          severity,
+          message: String(message),
+          items,
+          modal: Boolean(options?.modal),
+        }, extensionId);
+        const selected = (answer as { selected?: unknown } | null)?.selected;
+        return typeof selected === 'string' ? selected : undefined;
+      };
+
+    return {
+      showInformationMessage: show('info'),
+      showWarningMessage: show('warn'),
+      showErrorMessage: show('error'),
+    };
+  }
+
+  /**
+   * `workspace.getConfiguration`. Served from a snapshot main keeps in step,
+   * not from a round-trip: VS Code's `get()` is synchronous and extensions
+   * call it inside `activate()` and inside event handlers, where returning a
+   * promise would break them.
+   */
+  private workspaceApiFor(extensionId: string): Record<string, unknown> {
+    const snapshot = () => this.options.configuration?.() ?? {};
+    return {
+      getConfiguration: (section?: string) => {
+        const prefix = section ? `${section}.` : '';
+        const resolve = (key: string): unknown => snapshot()[`${prefix}${key}`];
+        return {
+          get: (key: string, defaultValue?: unknown) => {
+            const value = resolve(key);
+            return value === undefined ? defaultValue : value;
+          },
+          has: (key: string) => resolve(key) !== undefined,
+          inspect: (key: string) => {
+            const value = resolve(key);
+            // Forge resolves precedence in main and ships the effective
+            // value; claiming to know which scope it came from would be a
+            // guess, so only the resolved one is reported.
+            return value === undefined ? undefined : { key: `${prefix}${key}`, globalValue: value };
+          },
+          update: async () => {
+            this.options.reportUnsupportedApi('workspace.getConfiguration().update', extensionId);
+            throw new RpcError(
+              'UNSUPPORTED_API',
+              'Escribir configuración desde una extensión todavía no está soportado.',
+            );
+          },
+        };
+      },
+      get workspaceFolders() {
+        return undefined;
+      },
     };
   }
 

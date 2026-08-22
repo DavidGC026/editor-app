@@ -494,6 +494,21 @@ export type ExtensionCommandResult =
   | { ok: true; result: unknown }
   | { ok: false; error: { code: string; message: string } };
 
+/** A message an extension asked Forge to show. `items` are buttons. */
+export interface ExtensionHostMessage {
+  id: number;
+  severity: 'info' | 'warn' | 'error';
+  message: string;
+  items: string[];
+  extensionId: string | null;
+}
+
+/** Activation timings and failures of the live host generation. */
+export interface ExtensionActivationReport {
+  metrics: { id: string; reason: string; durationMs: number; at: number }[];
+  failures: { id: string; reason: string; code: string; message: string; at: number }[];
+}
+
 export interface InstalledExtension {
   id: string;
   displayName: string;
@@ -906,6 +921,19 @@ export interface ElectronAPI {
     ) => { dispose: () => void };
     /** Runs an extension command, activating its owner on demand. */
     executeCommand: (command: string, args?: unknown[]) => Promise<ExtensionCommandResult>;
+    /** Activation timings and failures of the live generation. */
+    activationReport: () => Promise<ExtensionActivationReport>;
+    onActivationChanged: (
+      callback: (report: ExtensionActivationReport) => void,
+    ) => { dispose: () => void };
+    /** Reports the language the user is looking at, for `onLanguage:`. */
+    notifyLanguage: (language: string) => void;
+    /** Messages extensions ask Forge to show (`window.show*Message`). */
+    onHostMessage: (
+      callback: (message: ExtensionHostMessage) => void,
+    ) => { dispose: () => void };
+    /** Answers one, with the picked item or null when dismissed. */
+    respondHostMessage: (id: number, selection: string | null) => void;
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
   };
