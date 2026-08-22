@@ -1,15 +1,29 @@
 # Documentación de Forge
 
-Índice de los documentos de `docs/`. Cada uno declara su propio alcance; la
-regla general es que **el roadmap y la matriz de compatibilidad mandan**
-sobre cualquier nota de implementación histórica.
+Índice de `docs/`. Cada documento declara su alcance. **El roadmap y la
+matriz de compatibilidad mandan** sobre cualquier nota histórica de
+extensiones. El mapa del editor (no el de extensiones) está en
+[app-architecture.md](./app-architecture.md). Setup y scripts:
+[README de la raíz](../README.md).
 
 ## Empezar por aquí
 
 | Documento | Para qué sirve |
 | --- | --- |
-| [CODING_GUIDELINES.md](./CODING_GUIDELINES.md) | Reglas de arquitectura y estilo obligatorias para cualquier cambio (límites de tamaño, división por responsabilidad, anti-monolitos). |
-| [REFACTORING_PROGRESS.md](./REFACTORING_PROGRESS.md) | Bitácora acumulada del refactor: qué se ha delegado del `store.ts` a slices y qué milestones de extensiones están cerrados. |
+| [app-architecture.md](./app-architecture.md) | Procesos main/preload/renderer, store, IPC, workbench y `.forge/`. |
+| [CODING_GUIDELINES.md](./CODING_GUIDELINES.md) | Reglas de arquitectura y estilo (límites de tamaño, slices, anti-monolitos). |
+| [REFACTORING_PROGRESS.md](./REFACTORING_PROGRESS.md) | Bitácora del refactor: slices extraídos y monolitos que quedan. |
+
+## Producto (fuera de extensiones)
+
+| Documento | Para qué sirve |
+| --- | --- |
+| [ai-and-agents.md](./ai-and-agents.md) | Agente nativo, providers, acciones rápidas, CLIs de terminal y bridge de Claude Code. |
+| [git-and-scm.md](./git-and-scm.md) | Git por CLI, diffs y device flow de GitHub. |
+| [lsp.md](./lsp.md) | Language server nativo de TS/JS (no el bridge de extensiones). |
+| [remote-workspaces.md](./remote-workspaces.md) | Motor `ssh://`: qué opera en remoto y qué no. |
+| [terminal-session-persistence.md](./terminal-session-persistence.md) | El PTY sobrevive a cambios de pestaña; React no es dueño del proceso. |
+| [remote-ssh-modal.md](./remote-ssh-modal.md) | Nota histórica del bug de `window.prompt()` en el modal SSH. |
 
 ## Sistema de extensiones
 
@@ -17,10 +31,11 @@ El trabajo grande del proyecto. Se lee en este orden:
 
 | Documento | Para qué sirve |
 | --- | --- |
-| [extensions-architecture.md](./extensions-architecture.md) | Arquitectura objetivo: capas, estructura de archivos, lifecycle, protocolo RPC, API `vscode`, seguridad y rendimiento. Es el marco al que se ajustan todos los milestones. |
-| [extensions-roadmap.md](./extensions-roadmap.md) | Milestones 0–6 con objetivos y criterios de salida, y el estado de cada uno. **Fuente de verdad del plan.** |
-| [extensions-compatibility.md](./extensions-compatibility.md) | Matriz de compatibilidad por capability. **Fuente de verdad de qué funciona de verdad**: "instalada" no significa "compatible". |
-| [extensions-security-and-testing.md](./extensions-security-and-testing.md) | Modelo de amenazas, límites de confianza, controles de install y runtime, pirámide de pruebas y el **gate** que hay que cerrar antes de ejecutar código de terceros. |
+| [extensions-architecture.md](./extensions-architecture.md) | Arquitectura objetivo: capas, lifecycle, RPC, API `vscode`, seguridad. |
+| [extensions-roadmap.md](./extensions-roadmap.md) | Milestones 0–10. **Fuente de verdad del plan.** |
+| [extensions-compatibility.md](./extensions-compatibility.md) | Matriz por capability. **Fuente de verdad de qué funciona.** |
+| [extensions-security-and-testing.md](./extensions-security-and-testing.md) | Amenazas, trust, controles de install/runtime y el gate antes de ejecutar código de terceros. |
+| [extensions-marketplace.md](./extensions-marketplace.md) | Tienda tal como está: búsqueda, install, updates, badges y lo que falta. |
 
 ### Progreso por milestone
 
@@ -28,31 +43,23 @@ El trabajo grande del proyecto. Se lee en este orden:
 | --- | --- |
 | [extensions-phase0-progress.md](./extensions-phase0-progress.md) | 0 — contratos, manifest reader, DTOs y readers segregados. |
 | [extensions-phase1-progress.md](./extensions-phase1-progress.md) | 1 — package store transaccional, instalación, updates y rollback. |
-| [extensions-phase2-progress.md](./extensions-phase2-progress.md) | 2 — motor declarativo completo (2.0–2.7): configuration, ContributionRegistry, grammars TextMate, commands/keybindings, menus y la superficie de la vista de detalle. |
-| [extensions-phase3-design.md](./extensions-phase3-design.md) | 3 — **diseño** del kernel del Extension Host: runtime, protocolo, activación, modelo de fallos y plan de incrementos 3.0–3.6. |
-| [extensions-phase3-trust.md](./extensions-phase3-trust.md) | 3.0 — Workspace Trust, Restricted Mode y las fixtures maliciosas de instalación. Prerrequisito del gate de seguridad. |
-| [extensions-phase3-progress.md](./extensions-phase3-progress.md) | 3.1+ — progreso del kernel: utilityProcess, envelope RPC, heartbeat, reinicio y lo que venga detrás. |
+| [extensions-phase2-progress.md](./extensions-phase2-progress.md) | 2 — motor declarativo (2.0–2.7). |
+| [extensions-phase3-design.md](./extensions-phase3-design.md) | 3 — diseño del kernel del Extension Host (3.0–3.6). |
+| [extensions-phase3-trust.md](./extensions-phase3-trust.md) | 3.0 — Workspace Trust y fixtures maliciosas de instalación. |
+| [extensions-phase3-progress.md](./extensions-phase3-progress.md) | 3.1+ — utilityProcess, envelope RPC, heartbeat, reinicio. |
 
 ### Notas históricas
 
 | Documento | Estado |
 | --- | --- |
-| [extensions-marketplace.md](./extensions-marketplace.md) | Descripción de la tienda tal como está implementada. Complementa, no sustituye, al roadmap. |
-| [extensions-phase2-implementation.md](./extensions-phase2-implementation.md) | Nota histórica de una fase 2 anterior a la numeración actual de milestones. No es el roadmap vigente. |
-
-## Funcionalidades concretas
-
-| Documento | Para qué sirve |
-| --- | --- |
-| [terminal-session-persistence.md](./terminal-session-persistence.md) | Por qué las sesiones de terminal sobreviven a los cambios de pestaña y cómo se separó el ciclo de vida del PTY del de React. |
-| [remote-ssh-modal.md](./remote-ssh-modal.md) | Diagnóstico y solución del modal "Open Remote SSH". |
+| [extensions-phase2-implementation.md](./extensions-phase2-implementation.md) | Fase 2 anterior a la numeración actual. No es el roadmap vigente. |
 
 ## Convenciones de esta carpeta
 
 - Los documentos de progreso se escriben **por incremento**, con una
-  sección de decisiones que explica el porqué de lo no obvio. El objetivo
-  es que dentro de seis meses se pueda reconstruir el razonamiento, no sólo
-  el resultado.
+  sección de decisiones que explica el porqué de lo no obvio.
 - Un incremento no se da por cerrado sin actualizar su documento de
   progreso, el roadmap y —si cambia lo que un usuario puede hacer— la
   matriz de compatibilidad.
+- Un sistema de producto nuevo (IA, Git, LSP, remoto, …) tiene su
+  propio doc; no se mete de pasada en una nota de extensiones.

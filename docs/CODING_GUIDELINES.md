@@ -20,7 +20,7 @@ Este documento define las reglas estrictas de desarrollo para este proyecto. Cua
 ## 4. Documentación Continua
 - **Siempre documenta:** Por cada nueva funcionalidad importante o refactorización masiva (ej. Sistema de extensiones, nuevo motor de búsqueda), DEBES crear o actualizar un archivo en la carpeta `docs/`.
 - **Comentarios en el código:** Usa JSDoc (`/** ... */`) para explicar el *por qué* de lógicas complejas, no el *qué* (el código bien nombrado ya explica el qué).
-- **Mantener actualizado el README:** Si agregas un nuevo comando o cambias la forma de ejecutar el proyecto, el README debe reflejarlo.
+- **Mantener actualizado el README:** Si agregas un nuevo comando o cambias la forma de ejecutar el proyecto, el [README de la raíz](../README.md) debe reflejarlo. Un sistema de producto nuevo (IA, Git, LSP, remoto, …) tiene doc propio en esta carpeta y entra al [índice](./README.md).
 
 ## 5. Estilos y CSS
 - Usar TailwindCSS para estilos. Evitar CSS inline `style={{...}}`.

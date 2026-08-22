@@ -69,8 +69,10 @@ no puede usarse como segmento de ruta; el install por marketplace verifica
 además que el paquete descargado declare el id solicitado.
 
 Estado: desde Milestone 0.3, todos los readers declarativos resuelven recursos
-dentro del root instalado y rechazan escapes. Esto protege la lectura runtime;
-los controles de extracción/staging completos continúan pendientes de Milestone 1.
+dentro del root instalado y rechazan escapes. Los controles de
+extracción/staging (límites, hash, commit atómico, zip-slip) cerraron en
+el Milestone 1; el 3.0 añadió el rechazo de symlinks y de identidades
+que no son segmentos de ruta seguros.
 
 ## 5. Controles de runtime
 
@@ -154,7 +156,7 @@ No se ejecuta código de terceros hasta pasar:
 | Workspace Trust básico | Cubierto | Milestone 3.0 ([progreso](./extensions-phase3-trust.md)) |
 | Fixtures maliciosos mínimos de **package** | Cubierto | Milestone 3.0 (`tests/fixtures/extensions/malicious/`) |
 | Fixtures maliciosos mínimos de **runtime** | Pendiente | Requiere host (3.5) |
-| RPC schema/timeout/heartbeat | Pendiente | Milestone 3.1 |
+| RPC schema/timeout/heartbeat | Cubierto | Milestone 3.1 ([progreso](./extensions-phase3-progress.md)) |
 | Crash isolation demostrado | Pendiente | Milestone 3.5 |
 | Logs y reporte de activation failure | Pendiente | Milestone 3.4 |
 | Safe Mode | Pendiente | Milestone 3.5 |

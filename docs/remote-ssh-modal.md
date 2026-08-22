@@ -1,5 +1,9 @@
 # Modal de conexión "Open Remote SSH"
 
+Nota histórica del bug de `window.prompt()`. El contrato del motor
+remoto (URI `ssh://`, FS, PTY y lo que **no** corre en remoto) está en
+[remote-workspaces.md](./remote-workspaces.md).
+
 **Fecha:** 2026-07-11
 
 ## Problema

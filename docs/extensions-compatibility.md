@@ -19,40 +19,41 @@ Definition of Done de la arquitectura.
 La UI debe mostrar nivel, razones y evidencia; nunca reducirlo a un badge
 genérico “Active”.
 
-## Estado real al 2026-08-15
+## Estado real al 2026-08-22
 
-Actualizada al cierre del Milestone 2
-([extensions-phase2-progress.md](./extensions-phase2-progress.md)).
+Actualizada tras el Milestone 3.1
+([extensions-phase3-progress.md](./extensions-phase3-progress.md)).
+El motor declarativo cerró en el Milestone 2.
 
 | Área | Estado | Observaciones |
 | --- | --- | --- |
-| Open VSX search/detail | `partial` | Búsqueda, detalle y README; sin paginación rica ni selector de versiones |
+| Open VSX search/detail | `partial` | Búsqueda (size 1–50, sin offset), detalle y README; sin paginación ni selector de versiones. Search/detail siguen en la facade, no en `ExtensionCatalog` |
 | Instalación Open VSX | `compatible` | Transaccional con staging, hash y provenance; deps resueltas por adelantado |
-| VSIX local | `partial` | Valida estructura y zip-slip; falta Workspace Trust (Milestone 3.0) |
+| VSIX local | `partial` | Staging, zip-slip, rechazo de symlinks y de `publisher` con separadores; sin selector de versión ni provenance de catálogo |
 | Uninstall | `partial` | Elimina paquete/registry con sweep de huérfanos; falta lifecycle del host |
 | Update/rollback | `compatible` | Update por extensión y rollback a la versión previa conservada |
 | Registry local | `compatible` | Puerto/adaptador tipado, escritura atómica y decoder tolerante con legacy |
-| IPC de tienda | `partial` | Preload tipado, handshake list v1 y canales `ext:config:*`; envelope RPC general pendiente |
+| IPC de tienda | `partial` | Preload tipado, handshake list v1, `ext:config:*` y `ext:host:*`; el envelope RPC es del host, no de la tienda |
 | Color themes | `partial` | Conversión aproximada TextMate → tokens Monaco; Monaco no permite retirar un tema |
 | Snippets | `declarative` | Providers por extensión con ownership y cleanup |
 | Languages | `declarative` | Registro y configuración con ownership; algunos campos sin cubrir |
-| Icon themes | `metadata` | Se parsean y seleccionan en UI, pero no se aplican al explorer |
-| Recursos declarativos | `partial` | Readers aislados y path traversal bloqueado; falta package validation completa |
-| Analyzer | `partial` | Estado y familias soportadas por carga real; reporte rico de blockers pendiente |
+| Icon themes | `declarative` | Aplicados al Explorer (0.5) con persistencia; `rootFolder` / `rootFolderExpanded` aún no |
+| Recursos declarativos | `partial` | Readers aislados, path traversal y symlinks bloqueados en extract; falta validación de corpus público |
+| Analyzer | `partial` | Nivel `none` / `partial` / `full` + blockers tipados por carga real; sin evidencia runtime |
 | Grammars | `declarative` | TextMate real (vscode-textmate + oniguruma WASM) con estado multi-línea e inyecciones |
 | Configuration | `declarative` | Scopes default < override < user < workspace, validación y settings UI |
 | Commands | `declarative` | Metadata, paleta y `enablement`; sin handler hasta el Extension Host |
 | Keybindings | `declarative` | Chords single-stroke por plataforma, gated por `when`, tras los atajos nativos |
 | Menus | `declarative` | `explorer/context` y `editor/context` con `when` y grupos de VS Code |
 | Context keys / `when` | `declarative` | Parser propio con la precedencia de VS Code y keys publicadas por el workbench |
-| Extension `main` | `metadata` | No se ejecuta código Node — Milestone 3, ver [extensions-phase3-design.md](./extensions-phase3-design.md) |
+| Extension `main` | `metadata` | No se ejecuta código Node — siguiente corte: 3.2, ver [extensions-phase3-design.md](./extensions-phase3-design.md) |
 | Extension `browser` | `metadata` | No existe Web Extension Host |
 | Activation events | `metadata` | Se muestran, no se despachan |
 | VS Code API | `unsupported` | No existe módulo `vscode` compatible |
-| LSP/DAP/tasks/testing | `unsupported` | Forge tiene piezas nativas, aún sin bridge de extensiones |
+| LSP/DAP/tasks/testing | `unsupported` | Forge tiene LSP/Git/terminal nativos, aún sin bridge de extensiones |
 | Views/webviews/notebooks | `unsupported` | Sin workbench contribution hosts |
 | Remote extension host | `unsupported` | Remote SSH no ejecuta extensiones junto al workspace |
-| Workspace Trust | `partial` | Trust por workspace y Restricted Mode con política de activación; falta la mitad runtime (el host aún no ejecuta nada) |
+| Workspace Trust | `partial` | Trust por workspace y Restricted Mode con política de activación; falta la mitad runtime (el host aún no carga código) |
 | Extension Host (kernel) | `partial` | `utilityProcess` con handshake, envelope RPC, heartbeat, backoff y circuit breaker; todavía no carga extensiones (3.2) |
 
 ## Matriz objetivo por contribution point

@@ -1,7 +1,9 @@
 # Plataforma de extensiones de Forge: arquitectura objetivo
 
-Estado del documento: **propuesta base para implementación incremental**
-Última revisión: 2026-07-15
+Estado del documento: **marco normativo** (la implementación se mide en
+la [matriz](./extensions-compatibility.md) y el
+[roadmap](./extensions-roadmap.md))
+Última revisión: 2026-08-22
 
 ## 1. Objetivo
 
@@ -45,28 +47,33 @@ caso debe aparecer en el reporte de compatibilidad.
 
 ## 3. Estado actual auditado
 
-La base existente ya permite:
+Instantánea al 2026-08-22. El detalle por capability está en
+[extensions-compatibility.md](./extensions-compatibility.md); esto
+sólo nombra el piso sobre el que se construye.
 
-- Buscar en Open VSX e instalar desde Open VSX o un VSIX local.
-- Extraer paquetes bajo `userData/extensions`.
-- Conservar metadatos básicos del manifiesto.
-- Aplicar temas de color y snippets.
-- Registrar lenguajes y parte de su configuración en Monaco.
-- Leer icon themes, aunque todavía no se aplican al explorador.
-- Mostrar detalles, README y estado aproximado en la tienda.
+Ya existe y se usa:
 
-Deuda que debe resolverse antes de ejecutar código de terceros:
+- Búsqueda e instalación desde Open VSX o VSIX local, transaccional
+  (staging, hash, directorios `<id>/<version>`, rollback, deps).
+- Enable/disable, update por extensión y sweep de huérfanos.
+- Motor declarativo: themes, snippets, languages, icon themes en el
+  Explorer, grammars TextMate, configuration (user + workspace),
+  commands/keybindings/menus con `when`.
+- Analyzer con reporte tipado (`none` / `partial` / `full` + blockers).
+- Workspace Trust y Restricted Mode (3.0).
+- Kernel del Extension Host (3.1): `utilityProcess`, envelope RPC,
+  heartbeat, backoff y circuit breaker. **No carga código de extensión.**
 
-- `electron/extensions.ts` mezcla red, instalación, persistencia, parsing y
-  lectura de contribuciones en un solo módulo.
-- `src/extensions/registry.ts` mezcla adaptadores de temas, snippets y lenguajes.
-- Los tipos están duplicados entre Electron, preload y renderer, con varios
-  límites tipados como `any`.
-- La instalación borra la versión anterior antes de validar completamente la
-  nueva; no es transaccional.
-- No existen enable/disable, perfiles, actualización, rollback ni dependencias.
-- No existe Extension Host, protocolo RPC, activación, permisos o health model.
-- “Active/Partial” se calcula por heurísticas, no por evidencia de runtime.
+Deuda que sigue bloqueando ejecutar `main` de terceros (gate en
+[extensions-security-and-testing.md](./extensions-security-and-testing.md)):
+
+- No hay loader, `require('vscode')`, `ExtensionContext` ni activation
+  events despachados (incremento 3.2).
+- `electron/extensions.ts` sigue siendo facade; no debe absorber
+  responsabilidades nuevas.
+- El preload de `ext:*` está tipado; otros namespaces (`lsp`, `ai`,
+  `claudeIde`) todavía usan `any`.
+- No hay perfiles, auto-update ni Extension Host web/remoto.
 
 ## 4. Principios SOLID aplicados
 
