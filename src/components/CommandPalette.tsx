@@ -172,8 +172,9 @@ export default function CommandPalette() {
   );
 
   // Declarative commands from enabled extensions, gated by their
-  // `enablement` when-clauses. Handlers arrive with the Extension Host
-  // (Milestone 3); until then execution is a well-reported no-op.
+  // `enablement` when-clauses. Running one reaches the Extension Host,
+  // which activates the owning extension on demand; a command nobody
+  // registers or declares `onCommand:` for is still a reported no-op.
   const extensionCommandEntries: Command[] = useMemo(
     () =>
       installedExtensions

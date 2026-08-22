@@ -180,9 +180,50 @@ test('commands without a handler warn and report false; handlers run and can fai
   registration.dispose();
   assert.equal(service.hasHandler('demo.hello'), false);
 
+  // A handler that throws still *took* the command: the keystroke is
+  // consumed, exactly as in VS Code, and the failure is reported.
   service.registerHandler('demo.boom', () => { throw new Error('kaputt'); });
-  assert.equal(service.execute('demo.boom'), false);
+  assert.equal(service.execute('demo.boom'), true);
   assert.match(warnings.at(-1), /kaputt/);
+});
+
+test('a command the Extension Host owns is dispatched to it', async () => {
+  const warnings = [];
+  const sent = [];
+  const service = new ExtensionCommandService({
+    warn: (message) => warnings.push(message),
+    hasRemote: (command) => command === 'ext.remote',
+    executeRemote: (command, args) => {
+      sent.push([command, args]);
+      return Promise.resolve('done');
+    },
+  });
+
+  assert.equal(service.hasHandler('ext.remote'), true, 'a host command counts as runnable');
+  assert.equal(service.execute('ext.remote', 'a'), true);
+  assert.deepEqual(sent, [['ext.remote', ['a']]]);
+  assert.deepEqual(warnings, []);
+
+  assert.equal(await service.executeAndWait('ext.remote'), true);
+  assert.equal(await service.executeAndWait('ext.unknown'), false, 'unknown resolves false');
+});
+
+test('a local handler shadows the host, and a host failure is reported not thrown', async () => {
+  const warnings = [];
+  const local = [];
+  const service = new ExtensionCommandService({
+    warn: (message) => warnings.push(message),
+    hasRemote: () => true,
+    executeRemote: () => Promise.reject(new Error('la extensión reventó')),
+  });
+  service.registerHandler('shared.id', () => local.push('local'));
+
+  assert.equal(service.execute('shared.id'), true);
+  assert.deepEqual(local, ['local'], 'an extension cannot shadow a workbench command');
+
+  assert.equal(service.execute('host.only'), true, 'the trigger is consumed');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(warnings.at(-1), /la extensión reventó/);
 });
 
 // ── Keybinding service ──────────────────────────────────────────────────

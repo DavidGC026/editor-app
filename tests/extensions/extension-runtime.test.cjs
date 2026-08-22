@@ -319,11 +319,11 @@ test('an unsupported API surfaces as a typed error and is reported for compatibi
 
   await assert.rejects(runtime.activate('forge-tests.unsupported'), (err) => {
     assert.equal(err.code, 'ACTIVATION_FAILED');
-    assert.match(err.message, /vscode\.commands\.registerCommand/);
+    assert.match(err.message, /vscode\.window\.createStatusBarItem/);
     return true;
   });
   assert.deepEqual(unsupported, [
-    { api: 'commands.registerCommand', extensionId: 'forge-tests.unsupported' },
+    { api: 'window.createStatusBarItem', extensionId: 'forge-tests.unsupported' },
   ]);
 });
 
@@ -436,4 +436,144 @@ test('the unsupported error names the API and its extension for the report', () 
   const error = new UnsupportedApiError('window.createTreeView', 'forge-tests.demo');
   assert.match(error.message, /vscode\.window\.createTreeView/);
   assert.match(error.message, /forge-tests\.demo/);
+});
+
+// ── Commands (increment 3.3) ────────────────────────────────────────────
+
+test('registered commands are announced to main and run with their args', async (t) => {
+  const bridge = [];
+  const { runtime } = createRuntime({
+    commandBridge: {
+      register: (command, extensionId) => bridge.push(['register', command, extensionId]),
+      unregister: (command, extensionId) => bridge.push(['unregister', command, extensionId]),
+    },
+  });
+  runtime.setExtensions([descriptorFor('commanding')]);
+  t.after(() => runtime.deactivateAll());
+
+  await runtime.activate('forge-tests.commanding');
+
+  assert.deepEqual(bridge, [
+    ['register', 'fixture.greet', 'forge-tests.commanding'],
+    ['register', 'fixture.explode', 'forge-tests.commanding'],
+    ['register', 'fixture.leaked', 'forge-tests.commanding'],
+  ], 'main learns the ids, never the handlers');
+
+  assert.equal(await runtime.executeCommand('fixture.greet', ['Forge']), 'hola, Forge');
+  assert.deepEqual(runtime.registeredCommands().sort(), [
+    'fixture.explode',
+    'fixture.greet',
+    'fixture.leaked',
+  ]);
+});
+
+test('a command that throws surfaces its error without unregistering itself', async (t) => {
+  const { runtime } = createRuntime();
+  runtime.setExtensions([descriptorFor('commanding')]);
+  t.after(() => runtime.deactivateAll());
+  await runtime.activate('forge-tests.commanding');
+
+  await assert.rejects(runtime.executeCommand('fixture.explode'), /el comando revienta/);
+
+  assert.equal(
+    await runtime.executeCommand('fixture.greet'),
+    'hola, mundo',
+    'the extension stays usable after one command failed',
+  );
+});
+
+test('an unknown command is COMMAND_NOT_FOUND, not a silent undefined', async (t) => {
+  const { runtime } = createRuntime();
+  runtime.setExtensions([descriptorFor('commanding')]);
+  t.after(() => runtime.deactivateAll());
+  await runtime.activate('forge-tests.commanding');
+
+  await assert.rejects(runtime.executeCommand('fixture.nope'), (err) => {
+    assert.equal(err.code, 'COMMAND_NOT_FOUND');
+    return true;
+  });
+});
+
+test('deactivate unregisters every command, including what the extension forgot', async () => {
+  const bridge = [];
+  const { runtime } = createRuntime({
+    commandBridge: {
+      register: () => undefined,
+      unregister: (command) => bridge.push(command),
+    },
+  });
+  runtime.setExtensions([descriptorFor('commanding')]);
+  await runtime.activate('forge-tests.commanding');
+
+  await runtime.deactivate('forge-tests.commanding');
+
+  assert.deepEqual(bridge.sort(), ['fixture.explode', 'fixture.greet', 'fixture.leaked']);
+  assert.deepEqual(runtime.registeredCommands(), []);
+});
+
+test('a failed activation takes its half-registered commands with it', async (t) => {
+  const { runtime } = createRuntime({
+    loadModule: () => ({
+      activate: (context) => {
+        const vscode = require('node:module')._load('vscode', { filename: path.join(FIXTURES, 'commanding', 'out', 'extension.js') }, false);
+        context.subscriptions.push(vscode.commands.registerCommand('half.done', () => 'x'));
+        throw new Error('a medias');
+      },
+    }),
+  });
+  runtime.setExtensions([descriptorFor('commanding')]);
+  t.after(() => runtime.deactivateAll());
+
+  await assert.rejects(runtime.activate('forge-tests.commanding'));
+
+  assert.deepEqual(
+    runtime.registeredCommands(),
+    [],
+    'a command pointing at an extension that never finished loading is worse than none',
+  );
+});
+
+test('a duplicate command id is refused instead of hijacking the first', async (t) => {
+  const { runtime } = createRuntime({
+    loadModule: () => ({
+      activate: (context) => {
+        const moduleSystem = require('node:module');
+        const vscode = moduleSystem._load('vscode', { filename: path.join(FIXTURES, 'commanding', 'out', 'extension.js') }, false);
+        context.subscriptions.push(vscode.commands.registerCommand('dup.id', () => 'first'));
+        vscode.commands.registerCommand('dup.id', () => 'second');
+      },
+    }),
+  });
+  runtime.setExtensions([descriptorFor('commanding')]);
+  t.after(() => runtime.deactivateAll());
+
+  await assert.rejects(runtime.activate('forge-tests.commanding'), /ya está registrado/);
+});
+
+test('executeCommand reaches the host own commands and refuses workbench ones', async (t) => {
+  const { runtime, unsupported } = createRuntime();
+  runtime.setExtensions([descriptorFor('commanding')]);
+  t.after(() => runtime.deactivateAll());
+  await runtime.activate('forge-tests.commanding');
+
+  const api = require('node:module')._load(
+    'vscode',
+    { filename: path.join(FIXTURES, 'commanding', 'out', 'extension.js') },
+    false,
+  );
+
+  assert.equal(await api.commands.executeCommand('fixture.greet', 'API'), 'hola, API');
+  assert.deepEqual((await api.commands.getCommands()).sort(), [
+    'fixture.explode',
+    'fixture.greet',
+    'fixture.leaked',
+  ]);
+
+  await assert.rejects(api.commands.executeCommand('workbench.action.files.save'), (err) => {
+    assert.equal(err.code, 'COMMAND_NOT_FOUND');
+    return true;
+  });
+  assert.deepEqual(unsupported, [
+    { api: 'commands.executeCommand', extensionId: 'forge-tests.commanding' },
+  ]);
 });

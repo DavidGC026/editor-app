@@ -1,11 +1,12 @@
 /**
  * Entry point of the Extension Host `utilityProcess`.
  *
- * Increment 3.1 taught it to speak the protocol; 3.2 puts the loader behind
- * it: `lifecycle.initialize` now carries the descriptors of the extensions
- * this generation may load, and `lifecycle.activate` runs their code through
- * the `ExtensionRuntime`. Everything outside `lifecycle` still answers
- * `UNSUPPORTED_API` — `commands.register` and friends are 3.3.
+ * Increment 3.1 taught it to speak the protocol, 3.2 put the loader behind
+ * it, and 3.3 added commands: `lifecycle.initialize` carries the descriptors
+ * this generation may load, `lifecycle.activate` runs their code through the
+ * `ExtensionRuntime`, and `commands.execute` invokes what they registered.
+ * Registrations travel the other way as notifications. Everything outside
+ * `lifecycle` and `commands` still answers `UNSUPPORTED_API`.
  *
  * The responder stays a pure `envelope → envelope` function (now allowed to
  * be async, since activation is), and all I/O wiring lives in
@@ -28,6 +29,7 @@ import type {
 import { ExtensionRuntime } from './extension-runtime';
 import type { ExtensionRuntimeOptions } from './extension-runtime';
 import type { ModuleSystemLike } from './module-loader';
+import type { CommandBridge } from './host-commands';
 import { createFsMementoStore } from './fs-memento-store';
 
 /** Message main sends to hand over the channel (mirrors the launcher). */
@@ -53,6 +55,7 @@ export interface RuntimeFactoryInput {
   workspacePath: string | null;
   log: ExtensionRuntimeOptions['log'];
   reportUnsupportedApi: ExtensionRuntimeOptions['reportUnsupportedApi'];
+  commandBridge: CommandBridge;
   now: () => number;
 }
 
@@ -88,6 +91,7 @@ function createDefaultRuntime(input: RuntimeFactoryInput): ExtensionRuntime {
     now: input.now,
     log: input.log,
     reportUnsupportedApi: input.reportUnsupportedApi,
+    commandBridge: input.commandBridge,
   });
 }
 
@@ -163,8 +167,8 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
       warn('mensaje descartado: no es un envelope válido');
       return null;
     }
-    // Main only issues requests in this milestone; responses to the host's own
-    // calls arrive in 3.3, when the host starts calling back.
+    // Main only issues requests: the host's own traffic is notifications
+    // (registrations, logs), which need no answer.
     if (message.kind !== 'request') return null;
 
     try {
@@ -193,6 +197,19 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
             reportUnsupportedApi: (api, extensionId) => {
               notify('diagnostics.unsupportedApi', { api, extensionId }, extensionId);
             },
+            // Registrations are notifications, not requests: the host has
+            // already decided (a duplicate id throws locally), and main
+            // vetoes by not loading the extension at all, never per command.
+            // A request here would also nest inside `activate`, competing
+            // with its own timeout.
+            commandBridge: {
+              register: (commandId, extensionId) => {
+                notify('commands.register', { command: commandId, extensionId }, extensionId);
+              },
+              unregister: (commandId, extensionId) => {
+                notify('commands.unregister', { command: commandId, extensionId }, extensionId);
+              },
+            },
             now: options.now,
           });
           runtime.setExtensions(descriptors);
@@ -218,6 +235,19 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
         case 'lifecycle.activate': {
           const result = await requireRuntime().activate(extensionIdOf(message));
           return reply(message, 'response', result);
+        }
+        case 'commands.execute': {
+          const payload = message.payload as { command?: unknown; args?: unknown } | null;
+          const command = payload && typeof payload === 'object' ? payload.command : undefined;
+          if (typeof command !== 'string' || !command) {
+            throw new RpcError('INVALID_PAYLOAD', '"commands.execute" requiere { command: string }.');
+          }
+          const args = Array.isArray(payload?.args) ? payload.args : [];
+          const result = await requireRuntime().executeCommand(command, args);
+          // Only serializable results cross the wire; anything else is
+          // dropped with a note rather than crashing the message pump on
+          // the way out.
+          return reply(message, 'response', { command, result: serializable(result, warn, command) });
         }
         case 'lifecycle.deactivate': {
           const id = extensionIdOf(message);
@@ -251,6 +281,25 @@ export function createBootstrapResponder(options: BootstrapResponderOptions): Re
         : new RpcError('ACTIVATION_FAILED', err instanceof Error ? err.message : String(err)));
     }
   };
+}
+
+/**
+ * A command may return anything — a Disposable, a class instance, a live
+ * editor object. Only what survives structured clone can travel, so the
+ * value is probed here: unclonable results become `undefined` with a log,
+ * which is far better than an exception thrown by `postMessage` after the
+ * responder already promised an answer.
+ */
+function serializable(value: unknown, warn: (message: string) => void, command: string): unknown {
+  if (value === undefined || value === null) return value;
+  const kind = typeof value;
+  if (kind === 'string' || kind === 'number' || kind === 'boolean') return value;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    warn(`el resultado de "${command}" no es serializable; se descarta`);
+    return undefined;
+  }
 }
 
 /** Validates the descriptor list at the edge; invalid entries are dropped and

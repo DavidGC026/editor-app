@@ -4,10 +4,10 @@
 const vscode = require('vscode');
 
 function activate() {
-  if (typeof vscode.commands.registerCommand !== 'function') {
+  if (typeof vscode.window.createStatusBarItem !== 'function') {
     throw new Error('la detección de características no debería fallar');
   }
-  return vscode.commands.registerCommand('fixture.nope', () => undefined);
+  return vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
 }
 
 module.exports = { activate };

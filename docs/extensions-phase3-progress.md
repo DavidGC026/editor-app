@@ -308,10 +308,109 @@ Pruebas añadidas (48 casos nuevos; la suite pasa de 168 a 216 tests):
   sistema de módulos cuando no hay nada que cargar sólo añade una capa que
   puede fallar; el host arranca igual de vacío.
 
+## Incremento 3.3 — comandos de punta a punta y activación `onCommand`
+
+Completado (2026-08-22). Criterio de salida del diseño §8: *«Un comando de
+extensión ejecuta desde la paleta, el menú del editor y un keybinding»*. Las
+tres superficies ya despachaban por el `ExtensionCommandService`, así que el
+cambio visible en el renderer es el que anticipaba el diseño §5 y **ninguno
+más**: un comando sin handler local ahora cae al host en vez de reportar un
+no-op.
+
+- **`HostCommandRegistry`** (`extension-host/host-commands.ts`): el handler
+  nunca sale del proceso; lo que viaja es el *hecho* de que un id existe y
+  quién lo posee. Ids duplicados **lanzan**, como en VS Code — reemplazar en
+  silencio el comando de otro dejaría que cualquier extensión secuestrara el
+  workbench declarando un id conocido. La propiedad se lleva por extensión,
+  así que `deactivate()` retira todo lo que registró aunque no lo dispusiera.
+- **`vscode.commands`** en la facade: `registerCommand`, `executeCommand` y
+  `getCommands`, ligados a la extensión que hace el `require`, de modo que un
+  registro es atribuible sin que el llamante tenga que decir quién es. Los
+  comandos propios del workbench todavía no son invocables desde una
+  extensión: `executeCommand` responde `COMMAND_NOT_FOUND` y lo reporta,
+  en vez de resolver `undefined` y dejar que la extensión actúe sobre algo
+  que nunca corrió.
+- **`commands.register` / `unregister` son notificaciones, no requests.** El
+  host ya decidió (el duplicado revienta localmente) y main veta no cargando
+  la extensión, nunca comando a comando. Además un request anidado dentro de
+  `activate` competiría con su propio timeout.
+- **`ExtensionCommandDispatcher`**
+  (`application/extension-command-dispatcher.ts`): índice id → dueño de la
+  generación viva y activación bajo demanda. Un comando sin handler busca a
+  quien declare `onCommand:<id>`, lo activa y **reintenta una vez**; más
+  reintentos convertirían un activation event mal declarado en un bucle. Si
+  la extensión se activa y aun así no registra el comando, se dice
+  exactamente eso. El índice se vacía al cambiar de generación o al parar el
+  host: un registro es un hecho sobre un proceso que ya no existe.
+- **`COMMAND_NOT_FOUND`** entra en el vocabulario de errores. `UNSUPPORTED_API`
+  significa «Forge no implementa esa API»; esto otro significa «el id no
+  existe ahora mismo en ningún sitio», y confundirlos haría imposible
+  distinguir una API pendiente de un comando mal escrito.
+- **Renderer**: `ExtensionCommandService` recibe `hasRemote` (síncrono) y
+  `executeRemote`. La sincronía no es un capricho: un keybinding tiene que
+  decidir si consume la pulsación antes de que un round-trip pudiera
+  contestar. `hasHandler` cuenta también los comandos que **se activarían**
+  (`onCommand:` declarado en un manifiesto instalado), porque main sabe
+  despertarlos; tratarlos como ausentes haría fallar el primer disparo de
+  cada comando. Un handler local gana siempre al del host: una extensión no
+  puede sombrear un comando del workbench declarando su id.
+- **Semántica de `execute()`**: devuelve si el comando fue **despachado**, no
+  si tuvo éxito. Un comando que lanza consume igual la pulsación, que es lo
+  que hace VS Code; el fallo se reporta. Se añade `executeAndWait` para quien
+  sí necesita el resultado.
+- **IPC**: `ext:host:commands` (invoke + push al cambiar) y
+  `ext:command:execute`, que devuelve `{ ok, result }` o
+  `{ ok: false, error: { code, message } }` — el error viaja como dato con su
+  código para que la UI distinga «nadie lo registra» de «la extensión
+  reventó» sin leer mensajes.
+
+Pruebas añadidas (24 casos nuevos; la suite pasa de 216 a 240 tests):
+
+- `tests/extensions/command-dispatcher.test.cjs` (14): construcción del
+  índice, unregister sólo del dueño, tráfico de generación desfasada,
+  notificación malformada descartada, otras notificaciones ignoradas,
+  generación nueva y host parado que vacían el registro, ejecución con args y
+  dueño, activación bajo demanda con reintento único, nadie que declare el
+  comando (sin despertar a nadie), extensión que activa sin registrar,
+  activación que falla, host parado que se arranca antes del comando e id
+  vacío.
+- `tests/extensions/extension-runtime.test.cjs` (+7): registro anunciado al
+  bridge, ejecución con argumentos, comando que lanza sin desregistrarse,
+  `COMMAND_NOT_FOUND`, `deactivate` que retira incluso lo que la extensión
+  olvidó, activación fallida que se lleva sus comandos a medias, id duplicado
+  rechazado y `executeCommand`/`getCommands` desde la propia facade.
+- `tests/extensions/extension-host.test.cjs` (+1): el camino completo sin
+  nada simulado en medio — la fixture registra dentro del host, la
+  notificación cruza el broker, el dispatcher la indexa y ejecuta el comando;
+  el que lanza vuelve como error tipado sin tumbar el host, y parar el host
+  vacía el registro.
+- `tests/extensions/commands-keybindings.test.cjs` (+2): despacho al host,
+  handler local que lo sombrea y fallo remoto reportado sin lanzar.
+- `tests/fixtures/extensions/host/commanding/`: fixture que registra dos
+  comandos por `subscriptions` y un tercero sin disponer.
+
+### Decisiones del incremento 3.3
+
+- **El handler se queda en el host.** Sólo cruzan ids. Cualquier diseño en el
+  que main sostenga la función acaba serializando closures o pasando por
+  `eval`.
+- **Registro por notificación, ejecución por request.** El registro es un
+  hecho consumado; la ejecución necesita respuesta, timeout y dueño.
+- **El resultado de un comando se filtra por serializabilidad.** Un comando
+  puede devolver un `Disposable` o un objeto vivo; se prueba el clonado y lo
+  que no pasa se descarta con aviso, en vez de que `postMessage` reviente
+  después de que el responder ya prometió una respuesta.
+- **`hasHandler` incluye lo activable.** Es la única forma de que el primer
+  disparo de un comando funcione sin haber activado antes la extensión, y es
+  lo que hace VS Code.
+- **Un comando que lanza consume su disparador.** Lo contrario dejaría pasar
+  la pulsación a otro binding después de que la extensión ya hizo trabajo.
+
 ## Próximo incremento
 
-3.3 — `commands.register` / `commands.execute` de punta a punta y activación
-`onCommand` desde el seam del renderer. El hueco está preparado: los
-namespaces del facade aceptan miembros implementados que sombrean el default
-que lanza, y `commands.register` es host→main, la primera dirección inversa
-que el broker todavía no enruta a un handler real.
+3.4 — activation service completo (`onStartupFinished`, `onLanguage`,
+`workspaceContains`), `window.showMessage`, `configuration.get`, diagnostics
+y métricas de activación. El seam está listo: el dispatcher ya resuelve
+`onCommand` desde `activationEvents`, que es el mismo índice que el resto de
+eventos necesita, y `activationMetrics` tiene ya su `durationMs` medido por
+activación.

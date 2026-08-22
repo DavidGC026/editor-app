@@ -147,6 +147,13 @@ function createFakeLauncher(timers, options = {}) {
         nodeVersion: options.nodeVersion ?? '20.0.0',
         exit: () => child.exit(0),
         warn: () => {},
+        // Host-originated notifications (logs, command registrations) travel
+        // the same channel as answers, so the fake process delivers them the
+        // same way the real port would.
+        notify: (envelope) => {
+          if (child.alive && !child.hung) child.deliver(envelope);
+        },
+        createRuntime: options.createRuntime,
       });
 
       generations.push(child);

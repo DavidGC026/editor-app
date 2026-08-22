@@ -481,6 +481,19 @@ export type ExtensionHostEvent =
     }
   | { type: 'dropped'; generation: number; reason: string; method: string };
 
+/** One command the running host generation can execute, and its owner. */
+export interface ExtensionCommandRegistration {
+  command: string;
+  extensionId: string;
+}
+
+/** Outcome of running an extension command. Failures travel as data with
+ *  their RPC code, so the UI can tell "nobody registers it" from "the
+ *  extension threw" without reading messages. */
+export type ExtensionCommandResult =
+  | { ok: true; result: unknown }
+  | { ok: false; error: { code: string; message: string } };
+
 export interface InstalledExtension {
   id: string;
   displayName: string;
@@ -885,6 +898,14 @@ export interface ElectronAPI {
     onHostEvent: (
       callback: (event: ExtensionHostEvent) => void,
     ) => { dispose: () => void };
+    /** Commands the live generation has registered. */
+    hostCommands: () => Promise<ExtensionCommandRegistration[]>;
+    /** Pushed when that set changes (activation, deactivation, restart). */
+    onHostCommandsChanged: (
+      callback: (commands: ExtensionCommandRegistration[]) => void,
+    ) => { dispose: () => void };
+    /** Runs an extension command, activating its owner on demand. */
+    executeCommand: (command: string, args?: unknown[]) => Promise<ExtensionCommandResult>;
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
   };

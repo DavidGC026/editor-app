@@ -465,10 +465,40 @@ const contributionRegistry = new ContributionRegistry<Monaco, InstalledExtension
 // Workbench-level contributions: they need no Monaco instance, so they
 // live in their own registry synced on every applyExtensions() call.
 
-/** Runtime command handlers. Declarative commands ship metadata only, so
- *  until the Extension Host registers handlers, executing one is a
- *  well-reported no-op that never consumes the trigger. */
-export const extensionCommandService = new ExtensionCommandService();
+// Commands the Extension Host has registered. Kept as a plain set here so
+// `hasHandler` stays synchronous — a keybinding must decide whether it
+// consumes the keystroke before any IPC could answer. The workbench fills
+// it through `setHostCommands`; this module never touches `window`.
+const hostCommands = new Set<string>();
+// Commands an installed extension promises to register when woken up
+// (`onCommand:<id>`). Main activates on demand, so these are runnable even
+// though no handler exists yet — treating them as missing would make every
+// command fail until something else happened to activate its extension.
+const activatableCommands = new Set<string>();
+let hostCommandRunner: ((command: string, args: unknown[]) => Promise<unknown>) | null = null;
+
+/** Publishes the host's command registry (replaces the previous set). */
+export function setHostCommands(commands: readonly { command: string }[]): void {
+  hostCommands.clear();
+  for (const entry of commands) hostCommands.add(entry.command);
+}
+
+/** Wires how a host command is run. Without it, host commands are inert. */
+export function setHostCommandRunner(
+  runner: ((command: string, args: unknown[]) => Promise<unknown>) | null,
+): void {
+  hostCommandRunner = runner;
+}
+
+/** Runtime command handlers. Declarative commands ship metadata only; a
+ *  command with no local handler falls through to the Extension Host, and
+ *  one nobody registers never consumes its trigger. */
+export const extensionCommandService = new ExtensionCommandService({
+  hasRemote: (command) => hostCommands.has(command) || activatableCommands.has(command),
+  executeRemote: (command, args) => (hostCommandRunner
+    ? hostCommandRunner(command, args)
+    : Promise.reject(new Error('el Extension Host no está conectado'))),
+});
 
 /** Dispatches contributed keybindings, gated by their when-clauses. */
 export const extensionKeybindingService = new KeybindingService({
@@ -534,6 +564,12 @@ export function attachMonaco(monaco: Monaco): void {
 export function applyExtensions(extensions: InstalledExtension[]): void {
   const active = extensions.filter((ext) => ext.enabled !== false);
   pendingExtensions = active;
+  activatableCommands.clear();
+  for (const ext of active) {
+    for (const event of ext.activationEvents ?? []) {
+      if (event.startsWith('onCommand:')) activatableCommands.add(event.slice('onCommand:'.length));
+    }
+  }
   // Keybindings work with no editor open, so their registry syncs even
   // before Monaco loads.
   workbenchRegistry.sync(null, active);

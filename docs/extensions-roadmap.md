@@ -327,11 +327,12 @@ Criterios de salida:
 
 ## Primer incremento recomendado
 
-El próximo cambio de código es el **incremento 3.3**: `commands.register`
-y `commands.execute` de punta a punta, más activación `onCommand` desde el
-seam del renderer. El 3.2 dejó el loader, la facade por extensión y el
-`ExtensionContext`; los namespaces ya aceptan miembros implementados que
-sombrean el default que lanza `UnsupportedApiError`.
+El próximo cambio de código es el **incremento 3.4**: activation service
+completo (`onStartupFinished`, `onLanguage`, `workspaceContains`),
+`window.showMessage`, `configuration.get`, diagnostics y métricas. El 3.3
+dejó los comandos ejecutándose de punta a punta y la activación `onCommand`
+resuelta desde `activationEvents`, que es el índice que el resto de eventos
+va a compartir.
 
 Diseño: [extensions-phase3-design.md](./extensions-phase3-design.md).
 Progreso del kernel: [extensions-phase3-progress.md](./extensions-phase3-progress.md).

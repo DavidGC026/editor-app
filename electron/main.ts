@@ -52,7 +52,10 @@ import {
   syncExtensionHost,
   getExtensionHostState,
   onExtensionHostEvent,
+  getExtensionCommandRegistry,
+  executeExtensionCommand,
 } from './extensions';
+import { RpcError } from './extensions/domain/rpc-protocol';
 import {
   gitStatus,
   gitStage,
@@ -2044,6 +2047,22 @@ onExtensionHostEvent((event) => {
 ipcMain.handle('ext:host:state', async () => getExtensionHostState());
 
 ipcMain.handle('ext:host:restart', async () => restartExtensionHost());
+
+ipcMain.handle('ext:host:commands', async () => getExtensionCommandRegistry());
+
+// Extension commands run in the host, but the renderer is what triggers
+// them (palette, keybinding, menu). The error is flattened to a typed body
+// so it survives the IPC boundary as data instead of a rejected invoke the
+// renderer would only see as a string.
+ipcMain.handle('ext:command:execute', async (_event, command: string, args: unknown[] = []) => {
+  try {
+    const result = await executeExtensionCommand(command, Array.isArray(args) ? args : []);
+    return { ok: true as const, result };
+  } catch (err) {
+    const code = err instanceof RpcError ? err.code : 'ACTIVATION_FAILED';
+    return { ok: false as const, error: { code, message: (err as Error).message } };
+  }
+});
 
 ipcMain.handle('ext:trust:status', async () => {
   return getWorkspaceTrustStatus();

@@ -405,7 +405,7 @@ test('the bootstrap responder answers lifecycle and refuses the rest', async () 
     uptimeMs: 250,
   });
 
-  const unsupported = await request('commands.execute', {}, 3);
+  const unsupported = await request('workspace.findFiles', {}, 3);
   assert.equal(unsupported.payload.code, 'UNSUPPORTED_API');
 
   const mismatch = await request('lifecycle.initialize', { protocol: 2 }, 4);
@@ -562,7 +562,7 @@ test('a failing activation answers a typed error and logs it as a notification',
     (envelope) => envelope.method === 'diagnostics.unsupportedApi',
   );
   assert.deepEqual(reported.payload, {
-    api: 'commands.registerCommand',
+    api: 'window.createStatusBarItem',
     extensionId: 'forge-tests.unsupported',
   });
   assert.equal(reported.id, 0, 'notifications carry no correlation id');
@@ -604,4 +604,60 @@ test('shutdown deactivates what is active before answering', async () => {
   assert.deepEqual(shutdown.payload, { ok: true });
   const loaded = require(path.join(HOST_FIXTURES, 'healthy', 'out', 'extension.js'));
   assert.equal(loaded.trace.includes('deactivate'), true, 'the extension got its deactivate()');
+});
+
+// ── Commands end to end (increment 3.3) ─────────────────────────────────
+// The full path with nothing stubbed between the two ends: a fixture
+// extension registers a command inside the host, the notification travels
+// through the broker, main's dispatcher indexes it and runs it.
+
+const {
+  ExtensionCommandDispatcher,
+} = require('../../dist-electron/extensions/application/extension-command-dispatcher.js');
+
+test('a fixture command registers through the broker and runs from main', async () => {
+  const descriptor = hostDescriptor('commanding');
+  const timers = createFakeTimers();
+  const launcher = createFakeLauncher(timers);
+  const host = new UtilityProcessExtensionHost({
+    launcher,
+    timers,
+    initialize: () => ({
+      apiVersion: '1.90.0',
+      extensions: [descriptor],
+      workspace: null,
+      trust: true,
+    }),
+    warn: () => {},
+  });
+
+  const dispatcher = new ExtensionCommandDispatcher({
+    host,
+    activatable: () => [{ id: descriptor.id, activationEvents: ['onCommand:fixture.greet'] }],
+    ensureRunning: () => host.start(),
+  });
+  host.onEvent((event) => dispatcher.handleHostEvent(event));
+
+  await host.start();
+  assert.equal(dispatcher.hasCommand('fixture.greet'), false, 'nothing is active yet');
+
+  const result = await dispatcher.execute('fixture.greet', ['Forge']);
+
+  assert.equal(result, 'hola, Forge');
+  assert.deepEqual(
+    dispatcher.registered().map((entry) => entry.command).sort(),
+    ['fixture.explode', 'fixture.greet', 'fixture.leaked'],
+    'every registration crossed as a notification',
+  );
+
+  // A command that throws inside the extension comes back as a typed error
+  // and leaves the host running.
+  await assert.rejects(dispatcher.execute('fixture.explode'), (err) => {
+    assert.match(err.message, /el comando revienta/);
+    return true;
+  });
+  assert.equal(host.state.status, 'running');
+
+  await host.stop();
+  assert.deepEqual(dispatcher.registered(), [], 'stopping the host clears the registry');
 });

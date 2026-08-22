@@ -32,7 +32,11 @@ export type RpcErrorCode =
   | 'TIMEOUT'
   | 'CANCELLED'
   | 'HOST_UNAVAILABLE'
-  | 'INVALID_PAYLOAD';
+  | 'INVALID_PAYLOAD'
+  /** The id reached the right side but nothing there answers to it. Distinct
+   *  from `UNSUPPORTED_API`, which means Forge does not implement the API at
+   *  all: this one is about a command that exists nowhere, right now. */
+  | 'COMMAND_NOT_FOUND';
 
 /** Serializable error body carried by `kind: 'error'` envelopes. */
 export interface RpcErrorPayload {
@@ -48,6 +52,7 @@ const ERROR_CODES: readonly RpcErrorCode[] = [
   'CANCELLED',
   'HOST_UNAVAILABLE',
   'INVALID_PAYLOAD',
+  'COMMAND_NOT_FOUND',
 ];
 
 const MESSAGE_KINDS: readonly RpcMessageKind[] = ['request', 'response', 'event', 'error'];

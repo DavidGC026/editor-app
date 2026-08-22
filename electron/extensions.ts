@@ -56,6 +56,10 @@ import type {
   ExtensionHostState,
 } from './extensions/application/ports/extension-host';
 import {
+  ExtensionCommandDispatcher,
+  type CommandRegistration,
+} from './extensions/application/extension-command-dispatcher';
+import {
   WorkspaceTrustService,
   WorkspaceTrustError,
 } from './extensions/application/workspace-trust-service';
@@ -638,6 +642,36 @@ const extensionHost = new UtilityProcessExtensionHost({
     trust: getWorkspaceTrustStatus().state === 'trusted',
   }),
 });
+
+// The command registry the host publishes, plus on-demand activation. It
+// listens to the host's own event stream rather than being pushed to, so a
+// restart clears it without anyone having to remember to.
+const commandDispatcher = new ExtensionCommandDispatcher({
+  host: extensionHost,
+  activatable: () => activatableExtensions().map((entry) => ({
+    id: entry.id,
+    activationEvents: entry.activationEvents ?? [],
+  })),
+  ensureRunning: () => startExtensionHost(),
+  onRegistryChanged: (commands) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('ext:host:commands', commands);
+    }
+  },
+  log: (message) => console.warn('[forge:ext-host]', message),
+});
+extensionHost.onEvent((event) => commandDispatcher.handleHostEvent(event));
+
+/** Command ids the running generation can actually execute. The renderer
+ *  needs this synchronously to decide whether a keystroke is consumed. */
+export function getExtensionCommandRegistry(): CommandRegistration[] {
+  return commandDispatcher.registered();
+}
+
+/** Runs an extension command, activating its owner on demand. */
+export function executeExtensionCommand(command: string, args: unknown[] = []): Promise<unknown> {
+  return commandDispatcher.execute(command, args);
+}
 
 export function getExtensionHostState(): ExtensionHostState {
   return extensionHost.state;

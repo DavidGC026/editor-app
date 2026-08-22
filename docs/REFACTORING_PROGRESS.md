@@ -177,6 +177,14 @@ líneas): `electron/main.ts`, `ExplorerPanel.tsx`, `EditorArea.tsx`,
   registró y no arrastra a las demás. Toda API sin implementar lanza
   `UnsupportedApiError` y se reporta, en vez de devolver `undefined`.
   Ver [extensions-phase3-progress.md](./extensions-phase3-progress.md).
+- **Extensiones Milestone 3.3**: comandos de punta a punta. El handler se
+  queda en el host y sólo cruzan ids: registro por notificación, ejecución
+  por request con dueño y timeout. Main indexa por generación y activa bajo
+  demanda a quien declare `onCommand:<id>`, con un único reintento. En el
+  renderer, un comando sin handler local cae al host y `hasHandler` cuenta
+  también lo activable, así que la paleta, el menú del editor y los
+  keybindings ejecutan comandos reales de extensión.
+  Ver [extensions-phase3-progress.md](./extensions-phase3-progress.md).
 
 Actualmente `store.ts` ha delegado Layout, Terminal, Git, Remote y Extensiones a
 slices específicos. Siguen inline: workspace, tabs, editor, IA, Live Server,

@@ -7,7 +7,12 @@ import type {
   SidebarPanel,
   WorkspaceTrustStatus,
 } from '../../types';
-import { applyExtensions, isThemeAvailable } from '../../extensions/registry';
+import {
+  applyExtensions,
+  isThemeAvailable,
+  setHostCommandRunner,
+  setHostCommands,
+} from '../../extensions/registry';
 import { findIconTheme } from '../../extensions/iconTheme';
 import { cleanIpcError } from '../utils/ipcError';
 
@@ -189,7 +194,31 @@ export const createExtensionSlice: StateCreator<
     const subscription = api.onHostEvent((event) => {
       if (event.type === 'state') set({ extensionHostState: event.state });
     });
-    return () => subscription.dispose();
+
+    // Which commands the host can run, and how to run them. Both are wired
+    // here so the workbench has a single place that connects the registry
+    // to IPC; `registry.ts` itself stays free of `window`.
+    if (api.executeCommand) {
+      setHostCommandRunner(async (command, args) => {
+        const answer = await api.executeCommand!(command, args);
+        if (!answer?.ok) {
+          throw new Error(answer?.error?.message ?? `"${command}" falló en el Extension Host`);
+        }
+        return answer.result;
+      });
+    }
+    let commandSubscription: { dispose: () => void } | null = null;
+    if (api.hostCommands && api.onHostCommandsChanged) {
+      void api.hostCommands().then(setHostCommands).catch(() => setHostCommands([]));
+      commandSubscription = api.onHostCommandsChanged(setHostCommands);
+    }
+
+    return () => {
+      subscription.dispose();
+      commandSubscription?.dispose();
+      setHostCommandRunner(null);
+      setHostCommands([]);
+    };
   },
 
   restartExtensionHost: async () => {

@@ -21,6 +21,19 @@ export type WorkspaceTrustStatus = WorkspaceTrustStatusPayload;
 export type ExtensionHostStatePayload = ExtensionHostState;
 export type ExtensionHostEventPayload = ExtensionHostEvent;
 
+/** One command the running host can execute, and who owns it. */
+export interface ExtensionCommandRegistration {
+  command: string;
+  extensionId: string;
+}
+
+/** Result of running an extension command. Failures arrive as data, with
+ *  the RPC code, so the renderer can tell "not registered" from "the
+ *  extension threw" without matching message text. */
+export type ExtensionCommandResult =
+  | { ok: true; result: unknown }
+  | { ok: false; error: { code: string; message: string } };
+
 export interface FsChangeEvent {
   reason: 'add' | 'unlink' | 'addDir' | 'unlinkDir' | 'change' | string;
   path: string;
@@ -247,6 +260,14 @@ export interface ElectronAPI {
     onHostEvent: (
       callback: (event: ExtensionHostEventPayload) => void,
     ) => { dispose: () => void };
+    /** Commands the live generation has registered. */
+    hostCommands: () => Promise<ExtensionCommandRegistration[]>;
+    /** Pushed whenever that set changes (activation, deactivation, restart). */
+    onHostCommandsChanged: (
+      callback: (commands: ExtensionCommandRegistration[]) => void,
+    ) => { dispose: () => void };
+    /** Runs an extension command, activating its owner on demand. */
+    executeCommand: (command: string, args?: unknown[]) => Promise<ExtensionCommandResult>;
     setActiveTheme: (themeId: string | null) => Promise<boolean>;
     setActiveIconTheme: (iconThemeId: string | null) => Promise<boolean>;
   };
@@ -607,6 +628,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
         dispose: () => ipcRenderer.removeListener('ext:host:event', handler),
       };
     },
+    hostCommands: () => ipcRenderer.invoke('ext:host:commands'),
+    onHostCommandsChanged: (callback: (commands: ExtensionCommandRegistration[]) => void) => {
+      const handler = (_event: unknown, payload: ExtensionCommandRegistration[]) => {
+        try {
+          callback(payload);
+        } catch (err) {
+          console.error('[forge] onHostCommandsChanged callback error:', err);
+        }
+      };
+      ipcRenderer.on('ext:host:commands', handler);
+      return {
+        dispose: () => ipcRenderer.removeListener('ext:host:commands', handler),
+      };
+    },
+    executeCommand: (command: string, args: unknown[] = []) =>
+      ipcRenderer.invoke('ext:command:execute', command, args),
     trustStatus: () => ipcRenderer.invoke('ext:trust:status'),
     grantWorkspaceTrust: () => ipcRenderer.invoke('ext:trust:grant'),
     revokeWorkspaceTrust: () => ipcRenderer.invoke('ext:trust:revoke'),

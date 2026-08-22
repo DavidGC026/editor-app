@@ -17,12 +17,31 @@ import type { Disposable } from './contributionRegistry';
 
 export type ExtensionCommandHandler = (...args: unknown[]) => unknown;
 
+export interface ExtensionCommandServiceOptions {
+  warn?: (message: string) => void;
+  /**
+   * Whether the Extension Host has a handler for this id. Must answer
+   * **synchronously**: a keybinding has to decide whether it consumes the
+   * keystroke before the round-trip could possibly finish.
+   */
+  hasRemote?: (command: string) => boolean;
+  /** Runs the command in the host. Rejections are reported, not thrown:
+   *  nobody is awaiting a keystroke. */
+  executeRemote?: (command: string, args: unknown[]) => Promise<unknown>;
+}
+
 export class ExtensionCommandService {
   private readonly handlers = new Map<string, ExtensionCommandHandler>();
   private readonly warn: (message: string) => void;
+  private readonly hasRemote: (command: string) => boolean;
+  private readonly executeRemote: ((command: string, args: unknown[]) => Promise<unknown>) | null;
 
-  constructor(warn?: (message: string) => void) {
-    this.warn = warn ?? ((message) => console.warn('[forge:ext]', message));
+  constructor(options: ExtensionCommandServiceOptions | ((message: string) => void) = {}) {
+    const resolved: ExtensionCommandServiceOptions =
+      typeof options === 'function' ? { warn: options } : options;
+    this.warn = resolved.warn ?? ((message) => console.warn('[forge:ext]', message));
+    this.hasRemote = resolved.hasRemote ?? (() => false);
+    this.executeRemote = resolved.executeRemote ?? null;
   }
 
   /** Registers the handler for a command id (last registration wins, as in
@@ -37,25 +56,61 @@ export class ExtensionCommandService {
     };
   }
 
+  /** True when the command will actually run: a local handler, or one the
+   *  Extension Host registered. */
   hasHandler(command: string): boolean {
-    return this.handlers.has(command);
+    return this.handlers.has(command) || this.hasRemote(command);
   }
 
-  /** Runs the command's handler. Returns false when there is none (the
-   *  extension's code would need the future Extension Host) or it threw. */
+  /**
+   * Runs the command. Returns whether it was dispatched at all — not
+   * whether it succeeded — because that is the question the caller has:
+   * a keystroke is consumed when something took the command, and a host
+   * command that throws still took it.
+   *
+   * Local handlers win over the host's: they are the workbench's own, and
+   * an extension must not be able to shadow them by claiming the id.
+   */
   execute(command: string, ...args: unknown[]): boolean {
     const handler = this.handlers.get(command);
-    if (!handler) {
-      this.warn(`command "${command}" has no handler yet (requires the Extension Host)`);
-      return false;
-    }
-    try {
-      handler(...args);
+    if (handler) {
+      try {
+        handler(...args);
+      } catch (err) {
+        this.warn(`command "${command}" failed: ${(err as Error).message}`);
+      }
       return true;
-    } catch (err) {
-      this.warn(`command "${command}" failed: ${(err as Error).message}`);
-      return false;
     }
+
+    if (this.executeRemote && this.hasRemote(command)) {
+      // Fire and report: the result lands long after the trigger returned.
+      void this.executeRemote(command, args).catch((err: unknown) => {
+        this.warn(`command "${command}" failed in the Extension Host: ${(err as Error).message}`);
+      });
+      return true;
+    }
+
+    this.warn(`command "${command}" has no handler`);
+    return false;
+  }
+
+  /**
+   * Runs the command and waits for it. For callers that need the result or
+   * the failure — the palette reporting an activation error, mostly. An
+   * unknown command still resolves `false` rather than throwing, so the
+   * caller decides how loud to be.
+   */
+  async executeAndWait(command: string, ...args: unknown[]): Promise<boolean> {
+    const handler = this.handlers.get(command);
+    if (handler) {
+      await handler(...args);
+      return true;
+    }
+    if (this.executeRemote && this.hasRemote(command)) {
+      await this.executeRemote(command, args);
+      return true;
+    }
+    return false;
   }
 }
 

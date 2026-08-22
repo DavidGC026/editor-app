@@ -11,6 +11,7 @@ resultados que el modelo de fallos del diseño §6 distingue:
 | `unsupported` | uso de una API que Forge todavía no implementa |
 | `silent` | `main` válido sin `activate` exportado (extensión declarativa) |
 | `escaping` | `main` que apunta fuera del directorio instalado |
+| `commanding` | `commands.registerCommand`, comando que lanza y comando sin `dispose` |
 
 Ninguna se descarga: el documento de seguridad prohíbe depender de un
 registro externo, así que viven en el repo con su versión fijada.

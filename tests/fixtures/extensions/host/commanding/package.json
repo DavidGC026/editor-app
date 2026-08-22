@@ -1,0 +1,14 @@
+{
+  "name": "commanding",
+  "publisher": "forge-tests",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./out/extension.js",
+  "activationEvents": ["onCommand:fixture.greet"],
+  "contributes": {
+    "commands": [
+      { "command": "fixture.greet", "title": "Greet" },
+      { "command": "fixture.explode", "title": "Explode" }
+    ]
+  }
+}

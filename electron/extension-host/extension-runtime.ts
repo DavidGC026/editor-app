@@ -30,6 +30,8 @@ import type { EntryPointResolverDeps, ModuleSystemLike } from './module-loader';
 import { createExtensionContext, disposeSubscriptions } from './extension-context';
 import type { ExtensionContext, MementoStore } from './extension-context';
 import { createVscodeApi } from './vscode-api/facade';
+import { HostCommandRegistry } from './host-commands';
+import type { CommandBridge } from './host-commands';
 
 export type ExtensionActivationStatus = 'inactive' | 'activating' | 'active' | 'failed';
 
@@ -56,6 +58,9 @@ export interface ExtensionRuntimeOptions {
   log: (level: 'debug' | 'info' | 'warn' | 'error', message: string, extensionId?: string) => void;
   /** Feeds `diagnostics.unsupportedApi`; see design §10. */
   reportUnsupportedApi: (api: string, extensionId: string) => void;
+  /** Publishes command registrations to main. Without one the host still
+   *  works standalone — useful in tests — but nothing outside knows. */
+  commandBridge?: CommandBridge;
 }
 
 interface LoadedExtension {
@@ -73,10 +78,28 @@ export class ExtensionRuntime {
   private readonly options: ExtensionRuntimeOptions;
   private readonly loaded = new Map<string, LoadedExtension>();
   private readonly apis = new Map<string, unknown>();
+  private readonly commands: HostCommandRegistry;
   private uninstallHook: (() => void) | null = null;
 
   constructor(options: ExtensionRuntimeOptions) {
     this.options = options;
+    // Command ids are global, so the registry is shared; ownership inside it
+    // is per extension, which is what `deactivate` needs to unwind.
+    this.commands = new HostCommandRegistry(options.commandBridge ?? {
+      register: () => undefined,
+      unregister: () => undefined,
+    });
+  }
+
+  /** Runs a command registered by an extension. This is the main → host
+   *  half of `commands.execute`; the host → main half is the bridge. */
+  executeCommand(commandId: string, args: unknown[] = []): Promise<unknown> {
+    return this.commands.execute(commandId, args);
+  }
+
+  /** Ids currently registered, for diagnostics and the handshake echo. */
+  registeredCommands(): string[] {
+    return this.commands.ids();
   }
 
   /** Publishes the descriptor set of this generation and arms the loader.
@@ -211,6 +234,9 @@ export class ExtensionRuntime {
           descriptor.id,
         ));
       }
+      // Commands registered before the throw would otherwise stay visible in
+      // the palette, pointing at an extension that never finished loading.
+      this.commands.disposeOwner(descriptor.id);
       entry.context = null;
       entry.module = null;
       this.options.log('error', `activación fallida: ${entry.error}`, descriptor.id);
@@ -249,6 +275,9 @@ export class ExtensionRuntime {
           id,
         ));
       }
+      // Whatever the extension forgot to dispose goes now: an unregistered
+      // command is recoverable, a command whose handler is gone is not.
+      this.commands.disposeOwner(id);
     }
   }
 
@@ -271,9 +300,46 @@ export class ExtensionRuntime {
       apiVersion: this.options.apiVersion,
       workspacePath: this.options.workspacePath,
       reportUnsupported: (apiName, owner) => this.options.reportUnsupportedApi(apiName, owner),
+      implemented: { commands: this.commandsApiFor(extensionId) },
     });
     this.apis.set(extensionId, api);
     return api;
+  }
+
+  /**
+   * The `vscode.commands` members implemented in this increment, bound to
+   * one extension so registrations are attributable without the caller
+   * having to say who it is. Everything else in the namespace keeps
+   * answering `UNSUPPORTED_API`.
+   */
+  private commandsApiFor(extensionId: string): Record<string, unknown> {
+    return {
+      registerCommand: (
+        commandId: string,
+        handler: (...args: unknown[]) => unknown,
+        thisArg?: unknown,
+      ) => this.commands.register(extensionId, commandId, handler, thisArg),
+
+      executeCommand: async (commandId: string, ...args: unknown[]) => {
+        if (this.commands.has(commandId)) return this.commands.execute(commandId, args);
+        // Workbench commands (`workbench.action.*`, `editor.action.*`) live
+        // in the renderer and reaching them from here needs the reverse
+        // route, which is a later increment. Saying so beats resolving to
+        // `undefined` and letting the extension act on a command that
+        // never ran.
+        this.options.reportUnsupportedApi('commands.executeCommand', extensionId);
+        throw new RpcError(
+          'COMMAND_NOT_FOUND',
+          `"${commandId}" no está registrado por ninguna extensión. Los comandos `
+          + 'propios del workbench todavía no son invocables desde una extensión.',
+        );
+      },
+
+      // VS Code returns every command it knows; Forge can only speak for the
+      // host's own, and saying which ones those are is more useful than
+      // refusing the call outright.
+      getCommands: async () => this.commands.ids(),
+    };
   }
 
   private resultFor(entry: LoadedExtension, durationMs: number): ExtensionActivationResult {

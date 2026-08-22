@@ -17,9 +17,10 @@ const MENU_LABELS: Record<string, string> = {
  * The commands and keybindings an installed extension declares, with the
  * shortcut that reaches each one on this platform and where it surfaces.
  *
- * Declarative contributions ship metadata only: until the Extension Host
- * lands there is no handler behind them, and the section says so per
- * command instead of pretending they are runnable.
+ * A declared command is only runnable once something stands behind it: a
+ * handler the Extension Host registered, or an `onCommand:` activation
+ * event that will produce one. The section says which per command instead
+ * of pretending they all work.
  */
 export default function ExtensionContributionsSection({
   extension,
@@ -78,7 +79,7 @@ export default function ExtensionContributionsSection({
             </code>
             <div className="mt-0.5 text-[10px] text-forge-text/35">
               {surfaces.length > 0 ? surfaces.join(' · ') : 'Command palette'}
-              {!runnable && ' · needs the Extension Host'}
+              {!runnable && ' · no handler registered'}
             </div>
             {summary.enablement && (
               <div
